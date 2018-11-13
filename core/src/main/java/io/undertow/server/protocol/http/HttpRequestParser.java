@@ -166,6 +166,7 @@ public abstract class HttpRequestParser {
     private final boolean decode;
     private final String charset;
     private final int maxCachedHeaderSize;
+    private final boolean allowUnescapedCharactersInUrl;
 
     private static final boolean[] ALLOWED_TARGET_CHARACTER = new boolean[256];
 
@@ -207,6 +208,7 @@ public abstract class HttpRequestParser {
         decode = options.get(UndertowOptions.DECODE_URL, true);
         charset = options.get(UndertowOptions.URL_CHARSET, StandardCharsets.UTF_8.name());
         maxCachedHeaderSize = options.get(UndertowOptions.MAX_CACHED_HEADER_SIZE, UndertowOptions.DEFAULT_MAX_CACHED_HEADER_SIZE);
+        this.allowUnescapedCharactersInUrl = options.get(UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL, false);
     }
 
     public static final HttpRequestParser instance(final OptionMap options) {
@@ -237,7 +239,11 @@ public abstract class HttpRequestParser {
                 builder.setRequestMethod(Methods.GET);
                 currentState.state = ParseState.PATH;
             } else {
-                handleHttpVerb(buffer, currentState, builder);
+                try {
+                    handleHttpVerb(buffer, currentState, builder);
+                } catch (IllegalArgumentException e) {
+                    throw new BadRequestException(e);
+                }
             }
             handlePath(buffer, currentState, builder);
             boolean failed = false;
@@ -339,11 +345,11 @@ public abstract class HttpRequestParser {
     }
 
 
-    abstract void handleHttpVerb(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder);
+    abstract void handleHttpVerb(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder) throws BadRequestException;
 
-    abstract void handleHttpVersion(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder);
+    abstract void handleHttpVersion(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder) throws BadRequestException;
 
-    abstract void handleHeader(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder);
+    abstract void handleHeader(ByteBuffer buffer, final ParseState currentState, final HttpServerExchange builder) throws BadRequestException;
 
     /**
      * The parse states for parsing the path.
@@ -372,7 +378,7 @@ public abstract class HttpRequestParser {
 
         while (buffer.hasRemaining()) {
             char next = (char) (buffer.get() & 0xFF);
-            if(!ALLOWED_TARGET_CHARACTER[next]) {
+            if(!allowUnescapedCharactersInUrl && !ALLOWED_TARGET_CHARACTER[next]) {
                 throw new BadRequestException(UndertowMessages.MESSAGES.invalidCharacterInRequestTarget(next));
             }
             if (next == ' ' || next == '\t') {
@@ -513,6 +519,9 @@ public abstract class HttpRequestParser {
 
         while (buffer.hasRemaining()) {
             char next = (char) (buffer.get() & 0xFF);
+            if(!allowUnescapedCharactersInUrl && !ALLOWED_TARGET_CHARACTER[next]) {
+                throw new BadRequestException(UndertowMessages.MESSAGES.invalidCharacterInRequestTarget(next));
+            }
             if (next == ' ' || next == '\t') {
                 final String queryString = stringBuilder.toString();
                 exchange.setQueryString(queryString);
@@ -593,6 +602,9 @@ public abstract class HttpRequestParser {
 
         while (buffer.hasRemaining()) {
             char next = (char) (buffer.get() & 0xFF);
+            if(!allowUnescapedCharactersInUrl && !ALLOWED_TARGET_CHARACTER[next]) {
+                throw new BadRequestException(UndertowMessages.MESSAGES.invalidCharacterInRequestTarget(next));
+            }
             if (next == ' ' || next == '\t' || next == '?') {
                 if (nextQueryParam == null) {
                     if (queryParamPos != stringBuilder.length()) {

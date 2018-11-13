@@ -39,8 +39,6 @@ import java.nio.ByteBuffer;
  * <p/>
  * This tests parsing the same basic request, over and over, with minor differences.
  * <p/>
- * Not all these actually conform to the HTTP/1.1 specification, however we are supposed to be
- * liberal in what we accept.
  *
  * @author Stuart Douglas
  */
@@ -133,13 +131,89 @@ public class SimpleParserTestCase {
         Assert.assertEquals("/", result.getRequestPath());
         Assert.assertEquals("http://myurl.com", result.getRequestURI());
     }
+
+    @Test(expected = BadRequestException.class)
+    public void testLineEndingInsteadOfSpacesAfterVerb() throws BadRequestException {
+        byte[] in = "GET\r/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testLineEndingInsteadOfSpacesAfterPath() throws BadRequestException {
+        byte[] in = "GET /somepath\rHTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testLineEndingInsteadOfSpacesAfterVerb2() throws BadRequestException {
+        byte[] in = "GET\n/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testLineEndingInsteadOfSpacesAfterVerb3() throws BadRequestException {
+        byte[] in = "FOO\n/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+    @Test(expected = BadRequestException.class)
+    public void testLineEndingInsteadOfSpacesAfterPath2() throws BadRequestException {
+        byte[] in = "GET /somepath\nHTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
     @Test
     public void testSimpleRequest() throws BadRequestException {
         byte[] in = "GET /somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
         runTest(in);
     }
 
+    @Test(expected = BadRequestException.class)
+    public void testTabInsteadOfSpaceAfterVerb() throws BadRequestException {
+        byte[] in = "GET\t/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
 
+    @Test(expected = BadRequestException.class)
+    public void testTabInsteadOfSpaceAfterVerb2() throws BadRequestException {
+        byte[] in = "FOO\t/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testTabInsteadOfSpaceAfterPath() throws BadRequestException {
+        byte[] in = "GET\t/somepath HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+
+    @Test(expected = BadRequestException.class)
+    public void testInvalidCharacterInPath() throws BadRequestException {
+        byte[] in = "GET /some>path HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testInvalidCharacterInQueryString1() throws BadRequestException {
+        byte[] in = "GET /somepath?foo>f=bar HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testInvalidCharacterInQueryString2() throws BadRequestException {
+        byte[] in = "GET /somepath?foo=ba>r HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testInvalidCharacterInPathParam1() throws BadRequestException {
+        byte[] in = "GET /somepath;foo>f=bar HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
+
+    @Test(expected = BadRequestException.class)
+    public void testInvalidCharacterInPathParam2() throws BadRequestException {
+        byte[] in = "GET /somepath;foo=ba>r HTTP/1.1\r\nHost:   www.somehost.net\r\nOtherHeader: some\r\n    value\r\n\r\n".getBytes();
+        runTest(in);
+    }
 
     @Test
     public void testSimpleRequestWithHeaderCaching() throws BadRequestException {
@@ -197,7 +271,7 @@ public class SimpleParserTestCase {
 
     @Test
     public void testQueryParams() throws BadRequestException {
-        byte[] in = "GET\thttp://www.somehost.net/somepath?a=b&b=c&d&e&f=\tHTTP/1.1\nHost: \t www.somehost.net\nOtherHeader:\tsome\n \t  value\n\r\n".getBytes();
+        byte[] in = "GET http://www.somehost.net/somepath?a=b&b=c&d&e&f= HTTP/1.1\nHost: \t www.somehost.net\nOtherHeader:\tsome\n \t  value\n\r\n".getBytes();
 
         final ParseState context = new ParseState(10);
         HttpServerExchange result = new HttpServerExchange(null);
@@ -243,6 +317,22 @@ public class SimpleParserTestCase {
         }
     }
 
+    /**
+     * Test for having mixed + and %20 in path for encoding spaces https://issues.jboss.org/browse/UNDERTOW-1193
+     */
+    @Test
+    public void testPlusSignVsSpaceEncodingInPath() throws BadRequestException {
+        byte[] in = "GET http://myurl.com/+/mypath%20with%20spaces HTTP/1.1\r\n\r\n".getBytes();
+
+        final ParseState context = new ParseState(10);
+        HttpServerExchange result = new HttpServerExchange(null);
+        HttpRequestParser.instance(OptionMap.create(UndertowOptions.ALLOW_ENCODED_SLASH, true)).handle(ByteBuffer.wrap(in), context, result);
+        Assert.assertSame(Methods.GET, result.getRequestMethod());
+        Assert.assertEquals("+ in path shouldn't be treated as space, caused probably by https://issues.jboss.org/browse/UNDERTOW-1193",
+                "/+/mypath with spaces", result.getRequestPath());
+        Assert.assertEquals("http://myurl.com/+/mypath%20with%20spaces", result.getRequestURI());
+    }
+
 
     @Test
     public void testEmptyQueryParams() throws BadRequestException {
@@ -268,6 +358,19 @@ public class SimpleParserTestCase {
         HttpServerExchange result = new HttpServerExchange(null);
         HttpRequestParser.instance(OptionMap.EMPTY).handle(ByteBuffer.wrap(in), context, result);
     }
+
+    @Test
+    public void testNonEncodedAsciiCharactersExplicitlyAllowed() throws UnsupportedEncodingException, BadRequestException {
+        byte[] in = "GET /bÃ¥r HTTP/1.1\r\n\r\n".getBytes("ISO-8859-1");
+
+        final ParseState context = new ParseState(10);
+        HttpServerExchange result = new HttpServerExchange(null);
+        HttpRequestParser.instance(OptionMap.create(UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL, true)).handle(ByteBuffer.wrap(in), context, result);
+        Assert.assertSame(Methods.GET, result.getRequestMethod());
+        Assert.assertEquals("/bår", result.getRequestPath());
+        Assert.assertEquals("/bÃ¥r", result.getRequestURI()); //not decoded
+    }
+
 
     private void runTest(final byte[] in) throws BadRequestException {
         runTest(in, "some value");

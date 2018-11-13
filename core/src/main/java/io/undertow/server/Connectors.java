@@ -165,6 +165,10 @@ public class Connectors {
         exchange.setRequestStartTime(System.nanoTime());
     }
 
+    public static void setRequestStartTime(HttpServerExchange existing, HttpServerExchange newExchange) {
+        newExchange.setRequestStartTime(existing.getRequestStartTime());
+    }
+
     private static String addRfc6265ResponseCookieToExchange(final Cookie cookie) {
         final StringBuilder header = new StringBuilder(cookie.getName());
         header.append("=");
@@ -355,7 +359,7 @@ public class Connectors {
             exchange.setInCall(true);
             handler.handleRequest(exchange);
             exchange.setInCall(false);
-            boolean resumed = exchange.runResumeReadWrite();
+            boolean resumed = exchange.isResumed();
             if (exchange.isDispatched()) {
                 if (resumed) {
                     UndertowLogger.REQUEST_LOGGER.resumedAndDispatched();
@@ -373,12 +377,14 @@ public class Connectors {
                         executor.execute(dispatchTask);
                     } catch (RejectedExecutionException e) {
                         UndertowLogger.REQUEST_LOGGER.debug("Failed to dispatch to worker", e);
-                        exchange.setStatusCode(StatusCodes.INTERNAL_SERVER_ERROR);
+                        exchange.setStatusCode(StatusCodes.SERVICE_UNAVAILABLE);
                         exchange.endExchange();
                     }
                 }
             } else if (!resumed) {
                 exchange.endExchange();
+            } else {
+                exchange.runResumeReadWrite();
             }
         } catch (Throwable t) {
             exchange.putAttachment(DefaultResponseListener.EXCEPTION, t);
@@ -461,7 +467,7 @@ public class Connectors {
                 URLUtils.parsePathParams(encodedPath.substring(i + 1), exchange, charset, decode, maxParameters);
                 return;
             } else if(c == '%' || c == '+') {
-                requiresDecode = true;
+                requiresDecode = decode;
             }
         }
 

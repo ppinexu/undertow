@@ -127,9 +127,17 @@ public abstract class AbstractFramedChannel<C extends AbstractFramedChannel<C, R
 
     @SuppressWarnings("unused")
     private volatile int outstandingBuffers;
-    private volatile AtomicIntegerFieldUpdater<AbstractFramedChannel> outstandingBuffersUpdater = AtomicIntegerFieldUpdater.newUpdater(AbstractFramedChannel.class, "outstandingBuffers");
+    private static final AtomicIntegerFieldUpdater<AbstractFramedChannel> outstandingBuffersUpdater = AtomicIntegerFieldUpdater.newUpdater(AbstractFramedChannel.class, "outstandingBuffers");
 
     private final LinkedBlockingDeque<Runnable> taskRunQueue = new LinkedBlockingDeque<>();
+    private final Runnable taskRunQueueRunnable = new Runnable() {
+        @Override
+        public void run() {
+            while (!taskRunQueue.isEmpty()) {
+                taskRunQueue.poll().run();
+            }
+        }
+    };
     private final OptionMap settings;
 
     /**
@@ -143,14 +151,21 @@ public abstract class AbstractFramedChannel<C extends AbstractFramedChannel<C, R
         public void freed() {
             int res = outstandingBuffersUpdater.decrementAndGet(AbstractFramedChannel.this);
             if(!receivesSuspended && res == maxQueuedBuffers - 1) {
-                synchronized (AbstractFramedChannel.this) {
-                    if(outstandingBuffersUpdater.get(AbstractFramedChannel.this) < maxQueuedBuffers) {
-                        if(UndertowLogger.REQUEST_IO_LOGGER.isTraceEnabled()) {
-                            UndertowLogger.REQUEST_IO_LOGGER.tracef("Resuming reads on %s as buffers have been consumed", AbstractFramedChannel.this);
+                //we need to do the resume in the IO thread, as there is a risk of deadlock otherwise, as the calling thread is an application thread
+                //and may hold a lock on a stream source channel, see UNDERTOW-1312
+                getIoThread().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        synchronized (AbstractFramedChannel.this) {
+                            if(outstandingBuffersUpdater.get(AbstractFramedChannel.this) < maxQueuedBuffers) {
+                                if(UndertowLogger.REQUEST_IO_LOGGER.isTraceEnabled()) {
+                                    UndertowLogger.REQUEST_IO_LOGGER.tracef("Resuming reads on %s as buffers have been consumed", AbstractFramedChannel.this);
+                                }
+                                channel.getSourceChannel().resumeReads();
+                            }
                         }
-                        channel.getSourceChannel().resumeReads();
                     }
-                }
+                });
             }
         }
     };
@@ -223,19 +238,10 @@ public abstract class AbstractFramedChannel<C extends AbstractFramedChannel<C, R
     void runInIoThread(Runnable task) {
         this.taskRunQueue.add(task);
         try {
-            getIoThread().execute(new Runnable() {
-                @Override
-                public void run() {
-                    while (!taskRunQueue.isEmpty()) {
-                        taskRunQueue.poll().run();
-                    }
-                }
-            });
+            getIoThread().execute(taskRunQueueRunnable);
         } catch (RejectedExecutionException e) {
             //thread is shutting down
-            while (!taskRunQueue.isEmpty()) {
-                taskRunQueue.poll().run();
-            }
+            ShutdownFallbackExecutor.execute(taskRunQueueRunnable);
         }
     }
 
@@ -758,7 +764,16 @@ public abstract class AbstractFramedChannel<C extends AbstractFramedChannel<C, R
     public synchronized void suspendReceives() {
         receivesSuspended = true;
         if (receiver == null) {
-            channel.getSourceChannel().suspendReads();
+            if(Thread.currentThread() == channel.getIoThread()) {
+                channel.getSourceChannel().suspendReads();
+            } else {
+                channel.getIoThread().execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        channel.getSourceChannel().suspendReads();
+                    }
+                });
+            }
         }
     }
 
@@ -766,7 +781,19 @@ public abstract class AbstractFramedChannel<C extends AbstractFramedChannel<C, R
      * Resume the receive of new frames via {@link #receive()}
      */
     public synchronized void resumeReceives() {
-        receivesSuspended = false;
+        receivesSuspended = false;if(Thread.currentThread() == channel.getIoThread()) {
+            doResume();
+        } else {
+            channel.getIoThread().execute(new Runnable() {
+                @Override
+                public void run() {
+                    doResume();
+                }
+            });
+        }
+    }
+
+    private void doResume() {
         if (readData != null && !readData.isFreed()) {
             channel.getSourceChannel().wakeupReads();
         } else {

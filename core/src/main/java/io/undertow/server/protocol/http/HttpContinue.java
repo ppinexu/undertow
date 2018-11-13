@@ -74,13 +74,7 @@ public class HttpContinue {
         if (!COMPATIBLE_PROTOCOLS.contains(exchange.getProtocol()) || exchange.isResponseStarted() || !exchange.getConnection().isContinueResponseSupported() || exchange.getAttachment(ALREADY_SENT) != null) {
             return false;
         }
-        if (exchange.getConnection() instanceof HttpServerConnection) {
-            if (((HttpServerConnection) exchange.getConnection()).getExtraBytes() != null) {
-                //we have already received some of the request body
-                //so according to the RFC we do not need to send the Continue
-                return false;
-            }
-        }
+
         HeaderMap requestHeaders = exchange.getRequestHeaders();
         return requiresContinueResponse(requestHeaders);
     }
@@ -169,6 +163,16 @@ public class HttpContinue {
                 responseChannel.awaitWritable(time, timeUnit);
             }
         };
+    }
+
+    /**
+     * Marks a continue response as already having been sent. In general this should only be used
+     * by low level handlers than need fine grained control over the continue response.
+     *
+     * @param exchange The exchange
+     */
+    public static void markContinueResponseSent(HttpServerExchange exchange) {
+        exchange.putAttachment(ALREADY_SENT, true);
     }
 
     /**

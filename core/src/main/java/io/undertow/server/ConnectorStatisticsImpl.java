@@ -77,6 +77,9 @@ public class ConnectorStatisticsImpl implements ConnectorStatistics {
         }
     };
 
+    private final ByteActivityCallback bytesSentAccumulator = new BytesSentAccumulator();
+    private final ByteActivityCallback bytesReceivedAccumulator = new BytesReceivedAccumulator();
+
     @Override
     public long getRequestCount() {
         return requestCountUpdater.get(this);
@@ -143,18 +146,18 @@ public class ConnectorStatisticsImpl implements ConnectorStatistics {
         do {
             maxActiveRequests = this.maxActiveRequests;
             if(current <= maxActiveRequests) {
-                return;
+                break;
             }
         } while (!maxActiveRequestsUpdater.compareAndSet(this, maxActiveRequests, current));
         exchange.addExchangeCompleteListener(completionListener);
     }
 
     public ByteActivityCallback sentAccumulator() {
-        return new BytesSentAccumulator();
+        return bytesSentAccumulator;
     }
 
     public ByteActivityCallback receivedAccumulator() {
-        return new BytesReceivedAccumulator();
+        return bytesReceivedAccumulator;
     }
 
     //todo: we can do a way

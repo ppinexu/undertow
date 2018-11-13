@@ -104,6 +104,17 @@ public class Bootstrap implements ServletExtension {
         SecurityActions.addContainer(deploymentInfo.getClassLoader(), container);
 
         deploymentInfo.addListener(Servlets.listener(WebSocketListener.class));
+        deploymentInfo.addDeploymentCompleteListener(new ServletContextListener() {
+            @Override
+            public void contextInitialized(ServletContextEvent sce) {
+                container.validateDeployment();
+            }
+
+            @Override
+            public void contextDestroyed(ServletContextEvent sce) {
+
+            }
+        });
     }
 
     private static final class WebSocketListener implements ServletContextListener {
@@ -114,6 +125,7 @@ public class Bootstrap implements ServletExtension {
         public void contextInitialized(ServletContextEvent sce) {
             container = (ServerWebSocketContainer) sce.getServletContext().getAttribute(ServerContainer.class.getName());
             FilterRegistration.Dynamic filter = sce.getServletContext().addFilter(FILTER_NAME, JsrWebSocketFilter.class);
+            sce.getServletContext().addListener(JsrWebSocketFilter.LogoutListener.class);
             filter.setAsyncSupported(true);
             if(!container.getConfiguredServerEndpoints().isEmpty()){
                 filter.addMappingForUrlPatterns(EnumSet.of(DispatcherType.REQUEST), true, "/*");

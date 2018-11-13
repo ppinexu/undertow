@@ -86,6 +86,8 @@ import io.undertow.util.WorkerUtils;
  * used to connect to the remote server, otherwise the next handler will be invoked and the
  * request will proceed as normal.
  *
+ * This handler uses non blocking IO
+ *
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
 public final class ProxyHandler implements HttpHandler {
@@ -445,8 +447,8 @@ public final class ProxyHandler implements HttpHandler {
                 }
             }
             final String remoteHost;
-            final SocketAddress address = exchange.getConnection().getPeerAddress();
-            if (address != null && address instanceof InetSocketAddress) {
+            final SocketAddress address = exchange.getSourceAddress();
+            if (address != null) {
                 remoteHost = ((InetSocketAddress) address).getHostString();
                 if(!((InetSocketAddress) address).isUnresolved()) {
                     request.putAttachment(ProxiedRequestAttachments.REMOTE_ADDRESS, ((InetSocketAddress) address).getAddress().getHostAddress());

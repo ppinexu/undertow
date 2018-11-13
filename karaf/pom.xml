@@ -25,12 +25,12 @@
     <parent>
         <groupId>io.undertow</groupId>
         <artifactId>undertow-parent</artifactId>
-        <version>2.0.0.Alpha2-SNAPSHOT</version>
+        <version>2.0.16.Final-SNAPSHOT</version>
     </parent>
 
     <groupId>io.undertow</groupId>
     <artifactId>karaf</artifactId>
-    <version>2.0.0.Alpha2-SNAPSHOT</version>
+    <version>2.0.16.Final-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>Undertow Karaf Features</name>
@@ -47,7 +47,7 @@
         <libraryPath></libraryPath>
         <java.library.path></java.library.path>
         <org.wildfly.openssl.path></org.wildfly.openssl.path>
-        <dependency.karaf.version>4.0.7</dependency.karaf.version>
+        <dependency.karaf.version>4.2.1</dependency.karaf.version>
     </properties>
 
     <dependencies>

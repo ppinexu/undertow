@@ -37,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 import io.undertow.client.ClientStatistics;
 import io.undertow.protocols.http2.Http2DataStreamSinkChannel;
@@ -46,7 +47,6 @@ import io.undertow.server.protocol.http.HttpAttachments;
 import io.undertow.util.HeaderMap;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Methods;
-import io.undertow.util.NetworkUtils;
 import io.undertow.util.Protocols;
 import org.xnio.ChannelExceptionHandler;
 import org.xnio.ChannelListener;
@@ -66,7 +66,6 @@ import io.undertow.client.ClientCallback;
 import io.undertow.client.ClientConnection;
 import io.undertow.client.ClientExchange;
 import io.undertow.client.ClientRequest;
-import io.undertow.client.ProxiedRequestAttachments;
 import io.undertow.protocols.http2.AbstractHttp2StreamSourceChannel;
 import io.undertow.protocols.http2.Http2Channel;
 import io.undertow.protocols.http2.Http2HeadersStreamSinkChannel;
@@ -180,29 +179,6 @@ public class Http2ClientConnection implements ClientConnection {
         request.getRequestHeaders().remove(Headers.KEEP_ALIVE);
         request.getRequestHeaders().remove(Headers.TRANSFER_ENCODING);
 
-        //setup the X-Forwarded-* headers
-        String peer = request.getAttachment(ProxiedRequestAttachments.REMOTE_HOST);
-        if(peer != null) {
-            request.getRequestHeaders().put(Headers.X_FORWARDED_FOR, peer);
-        }
-        Boolean proto = request.getAttachment(ProxiedRequestAttachments.IS_SSL);
-        if(proto != null) {
-            if (proto) {
-                request.getRequestHeaders().put(Headers.X_FORWARDED_PROTO, "https");
-            } else {
-                request.getRequestHeaders().put(Headers.X_FORWARDED_PROTO, "http");
-            }
-        }
-        String hn = request.getAttachment(ProxiedRequestAttachments.SERVER_NAME);
-        if(hn != null) {
-            request.getRequestHeaders().put(Headers.X_FORWARDED_HOST, NetworkUtils.formatPossibleIpv6Address(hn));
-        }
-        Integer port = request.getAttachment(ProxiedRequestAttachments.SERVER_PORT);
-        if(port != null) {
-            request.getRequestHeaders().put(Headers.X_FORWARDED_PORT, port);
-        }
-
-
         Http2HeadersStreamSinkChannel sinkChannel;
         try {
             sinkChannel = http2Channel.createStream(request.getRequestHeaders());
@@ -217,7 +193,21 @@ public class Http2ClientConnection implements ClientConnection {
         sinkChannel.setTrailersProducer(new Http2DataStreamSinkChannel.TrailersProducer() {
             @Override
             public HeaderMap getTrailers() {
-                return exchange.getAttachment(HttpAttachments.RESPONSE_TRAILERS);
+                HeaderMap attachment = exchange.getAttachment(HttpAttachments.RESPONSE_TRAILERS);
+                Supplier<HeaderMap> supplier = exchange.getAttachment(HttpAttachments.RESPONSE_TRAILER_SUPPLIER);
+                if(attachment != null && supplier == null) {
+                    return attachment;
+                } else if(attachment == null && supplier != null) {
+                    return supplier.get();
+                } else if(attachment != null) {
+                    HeaderMap supplied = supplier.get();
+                    for(HeaderValues k : supplied) {
+                        attachment.putAll(k.getHeaderName(), k);
+                    }
+                    return attachment;
+                } else {
+                    return null;
+                }
             }
         });
 

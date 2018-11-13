@@ -32,6 +32,7 @@ import io.undertow.servlet.api.LoggingExceptionHandler;
 import io.undertow.servlet.test.util.DeploymentUtils;
 import io.undertow.testutils.DefaultServer;
 import io.undertow.testutils.HttpClientUtils;
+import io.undertow.testutils.ProxyIgnore;
 import io.undertow.testutils.TestHttpClient;
 import io.undertow.util.StatusCodes;
 import org.apache.http.HttpResponse;
@@ -53,6 +54,7 @@ import static io.undertow.servlet.Servlets.servlet;
  * @author Stuart Douglas
  */
 @RunWith(DefaultServer.class)
+@ProxyIgnore
 public class MultiPartTestCase {
 
 
@@ -94,7 +96,7 @@ public class MultiPartTestCase {
             HttpResponse result = client.execute(post);
             Assert.assertEquals(StatusCodes.OK, result.getStatusLine().getStatusCode());
             final String response = HttpClientUtils.readResponse(result);
-            Assert.assertEquals("PARAMS:\n", response);
+            Assert.assertEquals("EXCEPTION: class java.lang.IllegalStateException", response);
         } finally {
             client.getConnectionManager().shutdown();
         }
@@ -183,8 +185,8 @@ public class MultiPartTestCase {
 
             post.setEntity(entity);
             HttpResponse result = client.execute(post);
-            Assert.assertEquals(DefaultServer.isH2() || DefaultServer.isAjp() ? StatusCodes.SERVICE_UNAVAILABLE : StatusCodes.INTERNAL_SERVER_ERROR, result.getStatusLine().getStatusCode());
-            HttpClientUtils.readResponse(result);
+            final String response = HttpClientUtils.readResponse(result);
+            Assert.assertEquals("EXCEPTION: class java.lang.IllegalStateException", response);
         } catch (IOException expected) {
             //in some environments the forced close of the read side will cause a connection reset
         }finally {
@@ -205,8 +207,8 @@ public class MultiPartTestCase {
 
             post.setEntity(entity);
             HttpResponse result = client.execute(post);
-            String response = HttpClientUtils.readResponse(result);
-            Assert.assertEquals("TEST FAILED: wrong response code\n" + response, StatusCodes.INTERNAL_SERVER_ERROR, result.getStatusLine().getStatusCode());
+            final String response = HttpClientUtils.readResponse(result);
+            Assert.assertEquals("EXCEPTION: class java.lang.IllegalStateException", response);
         } finally {
             client.getConnectionManager().shutdown();
         }

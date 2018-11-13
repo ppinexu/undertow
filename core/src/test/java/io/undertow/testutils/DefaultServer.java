@@ -33,6 +33,7 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
+
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -40,8 +41,6 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
 
-import io.undertow.protocols.alpn.ALPNProvider;
-import io.undertow.protocols.alpn.JettyAlpnProvider;
 import org.junit.Assume;
 import org.junit.Ignore;
 import org.junit.runner.Description;
@@ -59,15 +58,21 @@ import org.xnio.ChannelListeners;
 import org.xnio.IoUtils;
 import org.xnio.OptionMap;
 import org.xnio.Options;
+import org.xnio.Sequence;
 import org.xnio.StreamConnection;
 import org.xnio.Xnio;
 import org.xnio.XnioWorker;
 import org.xnio.channels.AcceptingChannel;
 import org.xnio.ssl.XnioSsl;
+
 import io.undertow.UndertowLogger;
 import io.undertow.UndertowOptions;
 import io.undertow.connector.ByteBufferPool;
 import io.undertow.protocols.alpn.ALPNManager;
+import io.undertow.protocols.alpn.ALPNProvider;
+import io.undertow.protocols.alpn.JettyAlpnProvider;
+import io.undertow.protocols.ssl.SNIContextMatcher;
+import io.undertow.protocols.ssl.SNISSLContext;
 import io.undertow.protocols.ssl.UndertowXnioSsl;
 import io.undertow.security.impl.GSSAPIAuthenticationMechanism;
 import io.undertow.server.DefaultByteBufferPool;
@@ -155,7 +160,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     private static KeyStore loadKeyStore(final String name) throws IOException {
         final InputStream stream = DefaultServer.class.getClassLoader().getResourceAsStream(name);
-        if(stream == null) {
+        if (stream == null) {
             throw new RuntimeException("Could not load keystore");
         }
         try {
@@ -191,17 +196,23 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
         SSLContext sslContext;
         try {
-            if(openssl && !client) {
+            if (openssl && !client) {
                 sslContext = SSLContext.getInstance("openssl.TLS");
             } else {
-                sslContext = SSLContext.getInstance("TLS");
+                sslContext = SSLContext.getInstance("TLSv1.2");
             }
             sslContext.init(keyManagers, trustManagers, null);
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
             throw new IOException("Unable to create and initialise the SSLContext", e);
         }
-
-        return sslContext;
+        if (!client) {
+            SNIContextMatcher matcher = new SNIContextMatcher.Builder().setDefaultContext(sslContext)
+                    .addMatch("localhost", sslContext)
+                    .build();
+            return new SNISSLContext(matcher);
+        } else {
+            return sslContext;
+        }
     }
 
     /**
@@ -277,7 +288,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
     }
 
     private static void runInternal(final RunNotifier notifier) {
-        if(openssl && OPENSSL_FAILURE != null) {
+        if (openssl && OPENSSL_FAILURE != null) {
             throw new RuntimeException(OPENSSL_FAILURE);
         }
         if (first) {
@@ -460,7 +471,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
                 return;
             }
         }
-        if(h2 || h2c || ajp || h2cUpgrade) {
+        if (h2 || h2c || ajp || h2cUpgrade) {
             //h2c-upgrade we still allow HTTP1
             HttpOneOnly httpOneOnly = method.getAnnotation(HttpOneOnly.class);
             if (httpOneOnly == null) {
@@ -580,7 +591,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
         SSLContext serverContext = getServerSslContext();
         getClientSSLContext();
 
-        startSSLServer(serverContext, OptionMap.create(SSL_CLIENT_AUTH_MODE, REQUESTED));
+        startSSLServer(serverContext, OptionMap.create(SSL_CLIENT_AUTH_MODE, REQUESTED, Options.SSL_ENABLED_PROTOCOLS, Sequence.of("TLSv1.2")));
     }
 
     public static SSLContext createClientSslContext() {
@@ -606,7 +617,6 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
      * single client. Client cert mode is not set by default
      */
     public static void startSSLServer(OptionMap optionMap) throws IOException {
-        SSLContext serverContext = getServerSslContext();
         clientSslContext = createClientSslContext();
         startSSLServer(optionMap, proxyAcceptListener != null ? proxyAcceptListener : acceptListener);
     }
@@ -681,6 +691,11 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
             sslServer = null;
         }
         clientSslContext = null;
+        if(proxyOpenListener != null) {
+            proxyOpenListener.closeConnections();
+        } else {
+            openListener.closeConnections();
+        }
     }
 
     public static String getHostAddress(String serverName) {
@@ -719,7 +734,11 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
             builder.set(UndertowOptions.ENABLE_HTTP2, true);
         }
         openListener.setUndertowOptions(builder.getMap());
-        if(loadBalancingProxyClient != null) {
+        openListener.closeConnections();
+        if(proxyOpenListener != null) {
+            proxyOpenListener.closeConnections();
+        }
+        if (loadBalancingProxyClient != null) {
             loadBalancingProxyClient.closeCurrentConnections();
         }
     }
@@ -781,9 +800,11 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     private static boolean isAlpnEnabled() {
         if (alpnEnabled == null) {
-            SSLEngine engine = getServerSslContext().createSSLEngine();
+            //we use the client context, as the server one is wrapped by a SNISSLEngine
+            //so we can't tell that ALPN is enabled or now
+            SSLEngine engine = getClientSSLContext().createSSLEngine();
             ALPNProvider provider = ALPNManager.INSTANCE.getProvider(engine);
-            if(provider instanceof JettyAlpnProvider) {
+            if (provider instanceof JettyAlpnProvider) {
                 alpnEnabled = System.getProperty("alpn-boot-string") != null;
             } else {
                 alpnEnabled = provider != null;

@@ -1863,6 +1863,10 @@ public final class HttpServerExchange extends AbstractAttachable {
         return ret;
     }
 
+    boolean isResumed() {
+        return anyAreSet(state, FLAG_SHOULD_RESUME_WRITES | FLAG_SHOULD_RESUME_READS);
+    }
+
     private static class ExchangeCompleteNextListener implements ExchangeCompletionListener.NextListener {
         private final ExchangeCompletionListener[] list;
         private final HttpServerExchange exchange;
@@ -1888,7 +1892,7 @@ public final class HttpServerExchange extends AbstractAttachable {
     private static class DefaultBlockingHttpExchange implements BlockingHttpExchange {
 
         private InputStream inputStream;
-        private OutputStream outputStream;
+        private UndertowOutputStream outputStream;
         private Sender sender;
         private final HttpServerExchange exchange;
 
@@ -1903,7 +1907,7 @@ public final class HttpServerExchange extends AbstractAttachable {
             return inputStream;
         }
 
-        public OutputStream getOutputStream() {
+        public UndertowOutputStream getOutputStream() {
             if (outputStream == null) {
                 outputStream = new UndertowOutputStream(exchange);
             }

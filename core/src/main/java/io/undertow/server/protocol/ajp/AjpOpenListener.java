@@ -23,6 +23,7 @@ import io.undertow.UndertowMessages;
 import io.undertow.UndertowOptions;
 import io.undertow.conduits.BytesReceivedStreamSourceConduit;
 import io.undertow.conduits.BytesSentStreamSinkConduit;
+import io.undertow.conduits.IdleTimeoutConduit;
 import io.undertow.conduits.ReadTimeoutStreamSourceConduit;
 import io.undertow.conduits.WriteTimeoutStreamSinkConduit;
 import io.undertow.server.ConnectorStatistics;
@@ -42,6 +43,9 @@ import org.xnio.StreamConnection;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static io.undertow.UndertowOptions.DECODE_URL;
 import static io.undertow.UndertowOptions.URL_CHARSET;
@@ -50,6 +54,8 @@ import static io.undertow.UndertowOptions.URL_CHARSET;
  * @author Stuart Douglas
  */
 public class AjpOpenListener implements OpenListener {
+
+    private final Set<AjpServerConnection> connections = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private final ByteBufferPool bufferPool;
     private final int bufferSize;
@@ -90,7 +96,7 @@ public class AjpOpenListener implements OpenListener {
         PooledByteBuffer buf = pool.allocate();
         this.bufferSize = buf.getBuffer().remaining();
         buf.close();
-        parser = new AjpRequestParser(undertowOptions.get(URL_CHARSET, StandardCharsets.UTF_8.name()), undertowOptions.get(DECODE_URL, true), undertowOptions.get(UndertowOptions.MAX_PARAMETERS, UndertowOptions.DEFAULT_MAX_PARAMETERS), undertowOptions.get(UndertowOptions.MAX_HEADERS, UndertowOptions.DEFAULT_MAX_HEADERS));
+        parser = new AjpRequestParser(undertowOptions.get(URL_CHARSET, StandardCharsets.UTF_8.name()), undertowOptions.get(DECODE_URL, true), undertowOptions.get(UndertowOptions.MAX_PARAMETERS, UndertowOptions.DEFAULT_MAX_PARAMETERS), undertowOptions.get(UndertowOptions.MAX_HEADERS, UndertowOptions.DEFAULT_MAX_HEADERS), undertowOptions.get(UndertowOptions.ALLOW_ENCODED_SLASH, false), undertowOptions.get(UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL, false));
         connectorStatistics = new ConnectorStatisticsImpl();
         statisticsEnabled = undertowOptions.get(UndertowOptions.ENABLE_CONNECTOR_STATISTICS, false);
     }
@@ -104,21 +110,16 @@ public class AjpOpenListener implements OpenListener {
         //set read and write timeouts
         try {
             Integer readTimeout = channel.getOption(Options.READ_TIMEOUT);
-            Integer idleTimeout = undertowOptions.get(UndertowOptions.IDLE_TIMEOUT);
-            if ((readTimeout == null || readTimeout <= 0) && idleTimeout != null) {
-                readTimeout = idleTimeout;
-            } else if (readTimeout != null && idleTimeout != null && idleTimeout > 0) {
-                readTimeout = Math.min(readTimeout, idleTimeout);
+            Integer idle = undertowOptions.get(UndertowOptions.IDLE_TIMEOUT);
+            if(idle != null) {
+                IdleTimeoutConduit conduit = new IdleTimeoutConduit(channel);
+                channel.getSourceChannel().setConduit(conduit);
+                channel.getSinkChannel().setConduit(conduit);
             }
             if (readTimeout != null && readTimeout > 0) {
                 channel.getSourceChannel().setConduit(new ReadTimeoutStreamSourceConduit(channel.getSourceChannel().getConduit(), channel, this));
             }
             Integer writeTimeout = channel.getOption(Options.WRITE_TIMEOUT);
-            if ((writeTimeout == null || writeTimeout <= 0) && idleTimeout != null) {
-                writeTimeout = idleTimeout;
-            } else if (writeTimeout != null && idleTimeout != null && idleTimeout > 0) {
-                writeTimeout = Math.min(writeTimeout, idleTimeout);
-            }
             if (writeTimeout != null && writeTimeout > 0) {
                 channel.getSinkChannel().setConduit(new WriteTimeoutStreamSinkConduit(channel.getSinkChannel().getConduit(), channel, this));
             }
@@ -138,6 +139,16 @@ public class AjpOpenListener implements OpenListener {
             connection.addCloseListener(closeListener);
         }
         connection.setAjpReadListener(readListener);
+
+        connections.add(connection);
+        connection.addCloseListener(new ServerConnection.CloseListener() {
+            @Override
+            public void closed(ServerConnection c) {
+                connections.remove(connection);
+            }
+        });
+
+
         readListener.startRequest();
         channel.getSourceChannel().setReadListener(readListener);
         readListener.handleEvent(channel.getSourceChannel());
@@ -165,7 +176,7 @@ public class AjpOpenListener implements OpenListener {
         }
         this.undertowOptions = undertowOptions;
         statisticsEnabled = undertowOptions.get(UndertowOptions.ENABLE_CONNECTOR_STATISTICS, false);
-        parser = new AjpRequestParser(undertowOptions.get(URL_CHARSET, StandardCharsets.UTF_8.name()), undertowOptions.get(DECODE_URL, true), undertowOptions.get(UndertowOptions.MAX_PARAMETERS, UndertowOptions.DEFAULT_MAX_PARAMETERS), undertowOptions.get(UndertowOptions.MAX_HEADERS, UndertowOptions.DEFAULT_MAX_HEADERS));
+        parser = new AjpRequestParser(undertowOptions.get(URL_CHARSET, StandardCharsets.UTF_8.name()), undertowOptions.get(DECODE_URL, true), undertowOptions.get(UndertowOptions.MAX_PARAMETERS, UndertowOptions.DEFAULT_MAX_PARAMETERS), undertowOptions.get(UndertowOptions.MAX_HEADERS, UndertowOptions.DEFAULT_MAX_HEADERS), undertowOptions.get(UndertowOptions.ALLOW_ENCODED_SLASH, false), undertowOptions.get(UndertowOptions.ALLOW_UNESCAPED_CHARACTERS_IN_URL, false));
     }
 
     @Override
@@ -179,6 +190,13 @@ public class AjpOpenListener implements OpenListener {
             return connectorStatistics;
         }
         return null;
+    }
+
+    @Override
+    public void closeConnections() {
+        for(AjpServerConnection i : connections) {
+            IoUtils.safeClose(i);
+        }
     }
 
     public String getScheme() {

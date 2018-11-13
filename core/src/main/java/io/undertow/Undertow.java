@@ -53,6 +53,8 @@ import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Convenience class used to build an Undertow server.
@@ -201,12 +203,10 @@ public final class Undertow {
 
                         if (http2) {
                             AlpnOpenListener alpn = new AlpnOpenListener(buffers, undertowOptions, httpOpenListener);
-                            if (http2) {
-                                Http2OpenListener http2Listener = new Http2OpenListener(buffers, undertowOptions);
-                                http2Listener.setRootHandler(rootHandler);
-                                alpn.addProtocol(Http2OpenListener.HTTP2, http2Listener, 10);
-                                alpn.addProtocol(Http2OpenListener.HTTP2_14, http2Listener, 7);
-                            }
+                            Http2OpenListener http2Listener = new Http2OpenListener(buffers, undertowOptions);
+                            http2Listener.setRootHandler(rootHandler);
+                            alpn.addProtocol(Http2OpenListener.HTTP2, http2Listener, 10);
+                            alpn.addProtocol(Http2OpenListener.HTTP2_14, http2Listener, 7);
                             openListener = alpn;
                         } else {
                             openListener = httpOpenListener;
@@ -263,7 +263,20 @@ public final class Undertow {
          * Only shutdown the worker if it was created during start()
          */
         if (internalWorker && worker != null) {
-            worker.shutdownNow();
+            Integer shutdownTimeoutMillis = serverOptions.get(UndertowOptions.SHUTDOWN_TIMEOUT);
+            worker.shutdown();
+            try {
+                if (shutdownTimeoutMillis == null) {
+                    worker.awaitTermination();
+                } else {
+                    if (!worker.awaitTermination(shutdownTimeoutMillis, TimeUnit.MILLISECONDS)) {
+                        worker.shutdownNow();
+                    }
+                }
+            } catch (InterruptedException e) {
+                worker.shutdownNow();
+                throw new RuntimeException(e);
+            }
             worker = null;
         }
         xnio = null;
@@ -572,6 +585,7 @@ public final class Undertow {
         private final OpenListener openListener;
         private final UndertowXnioSsl ssl;
         private final AcceptingChannel<? extends StreamConnection> channel;
+        private volatile boolean suspended = false;
 
         public ListenerInfo(String protcol, SocketAddress address, OpenListener openListener, UndertowXnioSsl ssl, AcceptingChannel<? extends StreamConnection> channel) {
             this.protcol = protcol;
@@ -590,11 +604,48 @@ public final class Undertow {
         }
 
         public SSLContext getSslContext() {
+            if(ssl == null) {
+                return null;
+            }
             return ssl.getSslContext();
         }
 
         public void setSslContext(SSLContext sslContext) {
-            ssl.updateSSLContext(sslContext);
+            if(ssl != null) {
+                //just ignore it if this is not a SSL listener
+                ssl.updateSSLContext(sslContext);
+            }
+        }
+
+        public synchronized void suspend() {
+            suspended = true;
+            channel.suspendAccepts();
+            CountDownLatch latch = new CountDownLatch(1);
+            //the channel may be in the middle of an accept, we need to close from the IO thread
+            channel.getIoThread().execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        openListener.closeConnections();
+                    } finally {
+                        latch.countDown();
+                    }
+                }
+            });
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        public synchronized void resume() {
+            suspended = false;
+            channel.resumeAccepts();
+        }
+
+        public boolean isSuspended() {
+            return suspended;
         }
 
         public ConnectorStatistics getConnectorStatistics() {

@@ -21,6 +21,7 @@ package io.undertow.server;
 import io.undertow.UndertowMessages;
 import io.undertow.UndertowOptions;
 import io.undertow.server.protocol.http.HttpServerConnection;
+
 import org.xnio.ChannelListener;
 import org.xnio.IoUtils;
 import org.xnio.Options;
@@ -160,24 +161,31 @@ public class ConnectionSSLSessionInfo implements SSLSessionInfo {
         int allowedBuffers = ((maxSize + bufferSize - 1) / bufferSize);
         poolArray = new PooledByteBuffer[allowedBuffers];
         poolArray[usedBuffers++] = pooled;
+        boolean overflow = false;
         try {
             int res;
-            do {
+            for(;;) {
                 final ByteBuffer buf = pooled.getBuffer();
                 res = Channels.readBlocking(requestChannel, buf);
                 if (!buf.hasRemaining()) {
-                    if (usedBuffers == allowedBuffers) {
-                        throw new SSLPeerUnverifiedException("");
+                    buf.flip();
+                    if(allowedBuffers == usedBuffers) {
+                        overflow = true;
+                        break;
                     } else {
-                        buf.flip();
                         pooled = exchange.getConnection().getByteBufferPool().allocate();
                         poolArray[usedBuffers++] = pooled;
                     }
+                } else if(res == -1) {
+                    buf.flip();
+                    break;
                 }
-            } while (res != -1);
+            }
             free = false;
-            pooled.getBuffer().flip();
             Connectors.ungetRequestBytes(exchange, poolArray);
+            if(overflow) {
+                throw new SSLPeerUnverifiedException("Cannot renegotiate");
+            }
             renegotiateNoRequest(exchange, newAuthMode);
         } finally {
             if (free) {

@@ -25,12 +25,12 @@
     <parent>
         <groupId>io.undertow</groupId>
         <artifactId>undertow-parent</artifactId>
-        <version>2.0.0.Alpha2-SNAPSHOT</version>
+        <version>2.0.16.Final-SNAPSHOT</version>
     </parent>
 
     <groupId>io.undertow</groupId>
     <artifactId>undertow-core</artifactId>
-    <version>2.0.0.Alpha2-SNAPSHOT</version>
+    <version>2.0.16.Final-SNAPSHOT</version>
 
     <name>Undertow Core</name>
 
@@ -537,7 +537,9 @@
                                     <goal>checkstyle</goal>
                                 </goals>
                                 <configuration>
-                                    <sourceDirectory>${java9.sourceDirectory}</sourceDirectory>
+                                    <sourceDirectories>
+                                        <sourceDirectory>${java9.sourceDirectory}</sourceDirectory>
+                                    </sourceDirectories>
                                 </configuration>
                             </execution>
                         </executions>

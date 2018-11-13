@@ -17,6 +17,7 @@
  */
 package io.undertow.websockets.jsr;
 
+import io.undertow.protocols.ssl.UndertowXnioSsl;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.HttpUpgradeListener;
 import io.undertow.servlet.api.ClassIntrospecter;
@@ -44,11 +45,14 @@ import io.undertow.websockets.jsr.handshake.JsrHybi13Handshake;
 import org.xnio.IoFuture;
 import org.xnio.IoUtils;
 import io.undertow.connector.ByteBufferPool;
+
+import org.xnio.OptionMap;
 import org.xnio.StreamConnection;
 import org.xnio.XnioWorker;
 import org.xnio.http.UpgradeFailedException;
 import org.xnio.ssl.XnioSsl;
 
+import javax.net.ssl.SSLContext;
 import javax.servlet.DispatcherType;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
@@ -69,6 +73,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.channels.ClosedChannelException;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -101,6 +106,7 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
     private final Map<Class<?>, ConfiguredClientEndpoint> clientEndpoints = new CopyOnWriteMap<>();
 
     private final List<ConfiguredServerEndpoint> configuredServerEndpoints = new ArrayList<>();
+    private final Set<Class<?>> annotatedEndpointClasses = new HashSet<>();
 
     /**
      * set of all deployed server endpoint paths. Due to the comparison function we can detect
@@ -119,6 +125,7 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
     private volatile int defaultMaxBinaryMessageBufferSize;
     private volatile int defaultMaxTextMessageBufferSize;
     private volatile boolean deploymentComplete = false;
+    private final List<DeploymentException> deploymentExceptions = new ArrayList<>();
 
     private ServletContextImpl contextToAddFilter = null;
 
@@ -208,6 +215,13 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
                 break;
             }
         }
+        if(ssl == null) {
+            try {
+                ssl = new UndertowXnioSsl(xnioWorker.getXnio(), OptionMap.EMPTY, SSLContext.getDefault());
+            } catch (NoSuchAlgorithmException e) {
+                //ignore
+            }
+        }
         return connectToServerInternal(instance, ssl, config, path);
     }
 
@@ -249,6 +263,13 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
                     break;
                 }
             }
+            if(ssl == null) {
+                try {
+                    ssl = new UndertowXnioSsl(xnioWorker.getXnio(), OptionMap.EMPTY, SSLContext.getDefault());
+                } catch (NoSuchAlgorithmException e) {
+                    //ignore
+                }
+            }
             return connectToServerInternal(factory.createInstance(instance), ssl, config, uri);
         } catch (InstantiationException e) {
             throw new RuntimeException(e);
@@ -266,6 +287,13 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
             ssl = provider.getSsl(xnioWorker, endpointInstance, cec, path);
             if (ssl != null) {
                 break;
+            }
+        }
+        if(ssl == null) {
+            try {
+                ssl = new UndertowXnioSsl(xnioWorker.getXnio(), OptionMap.EMPTY, SSLContext.getDefault());
+            } catch (NoSuchAlgorithmException e) {
+                //ignore
             }
         }
         //in theory we should not be able to connect until the deployment is complete, but the definition of when a deployment is complete is a bit nebulous.
@@ -540,7 +568,7 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
 
     @Override
     public Set<Extension> getInstalledExtensions() {
-        return Collections.emptySet();
+        return new HashSet<>(installedExtensions);
     }
 
     /**
@@ -583,7 +611,18 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
         if (deploymentComplete) {
             throw JsrWebSocketMessages.MESSAGES.cannotAddEndpointAfterDeployment();
         }
-        addEndpointInternal(endpoint, true);
+        //work around a TCK7 problem
+        //if the class has already been added we just ignore it
+        if(annotatedEndpointClasses.contains(endpoint)) {
+            return;
+        }
+        annotatedEndpointClasses.add(endpoint);
+        try {
+            addEndpointInternal(endpoint, true);
+        } catch (DeploymentException e) {
+            deploymentExceptions.add(e);
+            throw e;
+        }
     }
 
     private synchronized void addEndpointInternal(final Class<?> endpoint, boolean requiresCreation) throws DeploymentException {
@@ -755,8 +794,20 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
     }
 
 
+
+    public void validateDeployment() {
+        if(!deploymentExceptions.isEmpty()) {
+            RuntimeException e = JsrWebSocketMessages.MESSAGES.deploymentFailedDueToProgramaticErrors();
+            for(DeploymentException ex : deploymentExceptions) {
+                e.addSuppressed(ex);
+            }
+            throw e;
+        }
+    }
+
     public void deploymentComplete() {
         deploymentComplete = true;
+        validateDeployment();
     }
 
     public List<ConfiguredServerEndpoint> getConfiguredServerEndpoints() {
@@ -888,13 +939,17 @@ public class ServerWebSocketContainer implements ServerContainer, Closeable {
 
             @Override
             public synchronized void run() {
+                List<PauseListener> copy = null;
                 synchronized (ServerWebSocketContainer.this) {
                     count--;
                     if (count == 0) {
-                        for(PauseListener p : pauseListeners) {
-                            p.paused();
-                        }
+                        copy = new ArrayList<>(pauseListeners);
                         pauseListeners.clear();
+                    }
+                }
+                if(copy != null) {
+                    for (PauseListener p : copy) {
+                        p.paused();
                     }
                 }
             }

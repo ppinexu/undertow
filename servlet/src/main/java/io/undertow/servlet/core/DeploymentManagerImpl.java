@@ -90,8 +90,9 @@ import io.undertow.util.MimeMappings;
 
 import javax.servlet.ServletContainerInitializer;
 import javax.servlet.ServletContext;
+import javax.servlet.ServletContextEvent;
+import javax.servlet.ServletContextListener;
 import javax.servlet.ServletException;
-
 import java.io.File;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
@@ -253,6 +254,9 @@ public class DeploymentManagerImpl implements DeploymentManager {
         //any problems with the paths won't get detected until the data is initialize
         //so we force initialization here
         deployment.getServletPaths().initData();
+        for(ServletContextListener listener : deploymentInfo.getDeploymentCompleteListeners()) {
+            listener.contextInitialized(new ServletContextEvent(servletContext));
+        }
         state = State.DEPLOYED;
     }
 
@@ -273,7 +277,7 @@ public class DeploymentManagerImpl implements DeploymentManager {
             extension.handleDeployment(deploymentInfo, servletContext);
         }
 
-        if (!ServletExtension.class.getClassLoader().equals(deploymentInfo.getClassLoader())) {
+        if (ServletExtension.class.getClassLoader() != null && !ServletExtension.class.getClassLoader().equals(deploymentInfo.getClassLoader())) {
             for (ServletExtension extension : ServiceLoader.load(ServletExtension.class)) {
 
                 // Note: If the CLs are different, but can the see the same extensions and extension might get loaded
@@ -530,7 +534,7 @@ public class DeploymentManagerImpl implements DeploymentManager {
     private ApplicationListeners createListeners() {
         final List<ManagedListener> managedListeners = new ArrayList<>();
         for (final ListenerInfo listener : deployment.getDeploymentInfo().getListeners()) {
-            managedListeners.add(new ManagedListener(listener, false));
+            managedListeners.add(new ManagedListener(listener, listener.isProgramatic()));
         }
         return new ApplicationListeners(managedListeners, deployment.getServletContext());
     }
@@ -606,8 +610,8 @@ public class DeploymentManagerImpl implements DeploymentManager {
                     for (Lifecycle object : deployment.getLifecycleObjects()) {
                         try {
                             object.stop();
-                        } catch (Exception e) {
-                            UndertowServletLogger.ROOT_LOGGER.failedToDestroy(object, e);
+                        } catch (Throwable t) {
+                            UndertowServletLogger.ROOT_LOGGER.failedToDestroy(object, t);
                         }
                     }
                     deployment.getSessionManager().stop();
@@ -660,6 +664,13 @@ public class DeploymentManagerImpl implements DeploymentManager {
             deployment.createThreadSetupAction(new ThreadSetupHandler.Action<Void, Object>() {
                 @Override
                 public Void call(HttpServerExchange exchange, Object ignore) throws ServletException {
+                    for(ServletContextListener listener : deployment.getDeploymentInfo().getDeploymentCompleteListeners()) {
+                        try {
+                            listener.contextDestroyed(new ServletContextEvent(deployment.getServletContext()));
+                        } catch (Throwable t) {
+                            UndertowServletLogger.REQUEST_LOGGER.failedToDestroy(listener, t);
+                        }
+                    }
                     deployment.destroy();
                     deployment = null;
                     state = State.UNDEPLOYED;

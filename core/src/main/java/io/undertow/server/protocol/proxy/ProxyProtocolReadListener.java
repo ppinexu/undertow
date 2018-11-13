@@ -37,7 +37,7 @@ class ProxyProtocolReadListener implements ChannelListener<StreamSourceChannel> 
 
     private static final byte[] NAME = "PROXY ".getBytes(StandardCharsets.US_ASCII);
     private static final String UNKNOWN = "UNKNOWN";
-    private static final String TCP = "TCP";
+    private static final String TCP4 = "TCP4";
     private static final String TCP_6 = "TCP6";
 
     private final StreamConnection streamConnection;
@@ -136,7 +136,7 @@ class ProxyProtocolReadListener implements ChannelListener<StreamSourceChannel> 
                                         stringBuilder.setLength(0);
                                         if (protocol.equals(UNKNOWN)) {
                                             parsingUnknown = true;
-                                        } else if (!protocol.equals(TCP) && !protocol.equals(TCP_6)) {
+                                        } else if (!protocol.equals(TCP4) && !protocol.equals(TCP_6)) {
                                             throw UndertowMessages.MESSAGES.invalidProxyHeader();
                                         }
                                     } else if (sourceAddress == null) {
@@ -209,8 +209,7 @@ class ProxyProtocolReadListener implements ChannelListener<StreamSourceChannel> 
                 conduit.pushBack(new PooledAdaptor(additionalData));
                 streamConnection.getSourceChannel().setConduit(conduit);
             }
-            SslConnection sslConnection = ssl.wrapExistingConnection(streamConnection, sslOptionMap == null ? OptionMap.EMPTY : sslOptionMap);
-            UndertowXnioSsl.getSslEngine(sslConnection).setUseClientMode(false);
+            SslConnection sslConnection = ssl.wrapExistingConnection(streamConnection, sslOptionMap == null ? OptionMap.EMPTY : sslOptionMap, false);
             streamConnection = sslConnection;
 
             callOpenListener(streamConnection, null);
@@ -234,7 +233,7 @@ class ProxyProtocolReadListener implements ChannelListener<StreamSourceChannel> 
     }
 
     static InetAddress parseAddress(String addressString, String protocol) throws IOException {
-        if (protocol.equals(TCP)) {
+        if (protocol.equals(TCP4)) {
             return NetworkUtils.parseIpv4Address(addressString);
         } else {
             return NetworkUtils.parseIpv6Address(addressString);

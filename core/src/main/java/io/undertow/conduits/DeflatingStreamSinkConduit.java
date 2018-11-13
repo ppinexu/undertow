@@ -106,7 +106,7 @@ public class DeflatingStreamSinkConduit implements StreamSinkConduit {
     }
 
     public static ObjectPool<Deflater> simpleDeflaterPool(int poolSize, int deflateLevel) {
-        return new SimpleObjectPool<Deflater>(poolSize, () -> new Deflater(deflateLevel, true), Deflater::end);
+        return new SimpleObjectPool<Deflater>(poolSize, () -> new Deflater(deflateLevel, true), Deflater::reset, Deflater::end);
     }
 
 
@@ -461,7 +461,9 @@ public class DeflatingStreamSinkConduit implements StreamSinkConduit {
             if (additionalBuffer != null) {
                 remaining += additionalBuffer.remaining();
             }
-            exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, Integer.toString(remaining));
+            if(!exchange.getResponseHeaders().contains(Headers.TRANSFER_ENCODING)) {
+                exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, Integer.toString(remaining));
+            }
         } else {
             exchange.getResponseHeaders().remove(Headers.CONTENT_LENGTH);
         }

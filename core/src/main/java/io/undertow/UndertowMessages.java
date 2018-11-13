@@ -20,9 +20,13 @@ package io.undertow;
 
 import java.io.IOException;
 import java.nio.channels.ClosedChannelException;
+
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 
+import io.undertow.server.RequestTooBigException;
+import io.undertow.server.handlers.form.MultiPartParserDefinition;
 import org.jboss.logging.Messages;
 import org.jboss.logging.annotations.Cause;
 import org.jboss.logging.annotations.Message;
@@ -85,7 +89,7 @@ public interface UndertowMessages {
 //    @Message(id = 16, value = "Could not add cookie as cookie handler was not present in the handler chain")
 //    IllegalStateException cookieHandlerNotPresent();
 
-    @Message(id = 17, value = "Form value is a file, use getFile() instead")
+    @Message(id = 17, value = "Form value is a file, use getFileItem() instead")
     IllegalStateException formValueIsAFile();
 
     @Message(id = 18, value = "Form value is a String, use getValue() instead")
@@ -95,7 +99,7 @@ public interface UndertowMessages {
 //    IOException requestEntityWasTooLarge(SocketAddress address, long size);
 
     @Message(id = 20, value = "Connection terminated as request was larger than %s")
-    IOException requestEntityWasTooLarge(long size);
+    RequestTooBigException requestEntityWasTooLarge(long size);
 
     @Message(id = 21, value = "Session already invalidated")
     IllegalStateException sessionAlreadyInvalidated();
@@ -191,7 +195,7 @@ public interface UndertowMessages {
     IllegalArgumentException listenerAlreadyRegistered(String name);
 
     @Message(id = 54, value = "The maximum size %s for an individual file in a multipart request was exceeded")
-    IOException maxFileSizeExceeded(long maxIndividualFileSize);
+    MultiPartParserDefinition.FileTooLargeException maxFileSizeExceeded(long maxIndividualFileSize);
 
     @Message(id = 55, value = "Could not set attribute %s to %s as it is read only")
     String couldNotSetAttribute(String attributeName, String newValue);
@@ -572,4 +576,25 @@ public interface UndertowMessages {
 
     @Message(id = 185, value = "Invalid IP address %s")
     IOException invalidIpAddress(String addressString);
+
+    @Message(id = 186, value = "Invalid TLS extension")
+    SSLException invalidTlsExt();
+
+    @Message(id = 187, value = "Not enough data")
+    SSLException notEnoughData();
+
+    @Message(id = 188, value = "Empty host name in SNI extension")
+    SSLException emptyHostNameSni();
+
+    @Message(id = 189, value = "Duplicated host name of type %s")
+    SSLException duplicatedSniServerName(int type);
+
+    @Message(id = 190, value = "No context for SSL connection")
+    SSLException noContextForSslConnection();
+
+    @Message(id = 191, value = "Default context cannot be null")
+    IllegalStateException defaultContextCannotBeNull();
+
+    @Message(id = 192, value = "Form value is a in-memory file, use getFileItem() instead")
+    IllegalStateException formValueIsInMemoryFile();
 }

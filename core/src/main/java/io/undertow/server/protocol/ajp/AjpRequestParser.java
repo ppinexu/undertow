@@ -48,7 +48,6 @@ import static io.undertow.util.Methods.VERSION_CONTROL;
 
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.util.TreeMap;
 
@@ -57,10 +56,10 @@ import io.undertow.UndertowMessages;
 import io.undertow.security.impl.ExternalAuthenticationMechanism;
 import io.undertow.server.Connectors;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.BadRequestException;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import io.undertow.util.ParameterLimitException;
-import io.undertow.util.BadRequestException;
 import io.undertow.util.URLUtils;
 
 /**
@@ -71,8 +70,11 @@ public class AjpRequestParser {
 
     private final String encoding;
     private final boolean doDecode;
+    private final boolean allowEncodedSlash;
     private final int maxParameters;
     private final int maxHeaders;
+    private StringBuilder decodeBuffer;
+    private final boolean allowUnescapedCharactersInUrl;
 
     private static final HttpString[] HTTP_HEADERS;
 
@@ -175,11 +177,13 @@ public class AjpRequestParser {
         ATTRIBUTES[13] = STORED_METHOD;
     }
 
-    public AjpRequestParser(String encoding, boolean doDecode, int maxParameters, int maxHeaders) {
+    public AjpRequestParser(String encoding, boolean doDecode, int maxParameters, int maxHeaders, boolean allowEncodedSlash, boolean allowUnescapedCharactersInUrl) {
         this.encoding = encoding;
         this.doDecode = doDecode;
         this.maxParameters = maxParameters;
         this.maxHeaders = maxHeaders;
+        this.allowEncodedSlash = allowEncodedSlash;
+        this.allowUnescapedCharactersInUrl = allowUnescapedCharactersInUrl;
     }
 
 
@@ -249,13 +253,23 @@ public class AjpRequestParser {
                     int colon = result.value.indexOf(';');
                     if (colon == -1) {
                         String res = decode(result.value, result.containsUrlCharacters);
-                        exchange.setRequestURI(result.value);
+                        if(result.containsUnencodedCharacters) {
+                            //we decode if the URL was non-compliant, and contained incorrectly encoded characters
+                            //there is not really a 'correct' thing to do in this situation, but this seems the least incorrect
+                            exchange.setRequestURI(res);
+                        } else {
+                            exchange.setRequestURI(result.value);
+                        }
                         exchange.setRequestPath(res);
                         exchange.setRelativePath(res);
                     } else {
                         final String url = result.value.substring(0, colon);
                         String res = decode(url, result.containsUrlCharacters);
-                        exchange.setRequestURI(result.value);
+                        if(result.containsUnencodedCharacters) {
+                            exchange.setRequestURI(res);
+                        } else {
+                            exchange.setRequestURI(result.value);
+                        }
                         exchange.setRequestPath(res);
                         exchange.setRelativePath(res);
                         try {
@@ -395,6 +409,7 @@ public class AjpRequestParser {
                         state.currentIntegerPart = -1;
                     }
                     String result;
+                    boolean decodingAlreadyDone = false;
                     if (state.currentAttribute.equals(SSL_KEY_SIZE)) {
                         IntegerHolder resultHolder = parse16BitInteger(buf, state);
                         if (!resultHolder.readComplete) {
@@ -408,15 +423,20 @@ public class AjpRequestParser {
                             state.state = AjpRequestParseState.READING_ATTRIBUTES;
                             return;
                         }
-                        result = resultHolder.value;
+                        if(resultHolder.containsUnencodedCharacters) {
+                            result = decode(resultHolder.value, true);
+                            decodingAlreadyDone = true;
+                        } else {
+                            result = resultHolder.value;
+                        }
                     }
                     //query string.
                     if (state.currentAttribute.equals(QUERY_STRING)) {
                         String resultAsQueryString = result == null ? "" : result;
                         exchange.setQueryString(resultAsQueryString);
                         try {
-                            URLUtils.parseQueryString(resultAsQueryString, exchange, encoding, doDecode, maxParameters);
-                        } catch (ParameterLimitException e) {
+                            URLUtils.parseQueryString(resultAsQueryString, exchange, encoding, doDecode && !decodingAlreadyDone, maxParameters);
+                        } catch (ParameterLimitException | IllegalArgumentException e) {
                             UndertowLogger.REQUEST_IO_LOGGER.failedToParseRequest(e);
                             state.badRequest = true;
                         }
@@ -455,7 +475,10 @@ public class AjpRequestParser {
     private String decode(String url, final boolean containsUrlCharacters) throws UnsupportedEncodingException {
         if (doDecode && containsUrlCharacters) {
             try {
-                return URLDecoder.decode(url, encoding);
+                if(decodeBuffer == null) {
+                    decodeBuffer = new StringBuilder();
+                }
+                return URLUtils.decode(url, this.encoding, allowEncodedSlash, false, decodeBuffer);
             } catch (Exception e) {
                 throw UndertowMessages.MESSAGES.failedToDecodeURL(url, encoding, e);
             }
@@ -488,10 +511,11 @@ public class AjpRequestParser {
         }
     }
 
-    protected StringHolder parseString(ByteBuffer buf, AjpRequestParseState state, StringType type) throws UnsupportedEncodingException {
+    protected StringHolder parseString(ByteBuffer buf, AjpRequestParseState state, StringType type) throws UnsupportedEncodingException, BadRequestException {
         boolean containsUrlCharacters = state.containsUrlCharacters;
+        boolean containsUnencodedUrlCharacters = state.containsUnencodedUrlCharacters;
         if (!buf.hasRemaining()) {
-            return new StringHolder(null, false, false);
+            return new StringHolder(null, false, false, false);
         }
         int stringLength = state.stringLength;
         if (stringLength == -1) {
@@ -501,7 +525,7 @@ public class AjpRequestParser {
                 stringLength = ((0xFF & number) << 8) + (b & 0xFF);
             } else {
                 state.stringLength = number | STRING_LENGTH_MASK;
-                return new StringHolder(null, false, false);
+                return new StringHolder(null, false, false, false);
             }
         } else if ((stringLength & STRING_LENGTH_MASK) != 0) {
             int number = stringLength & ~STRING_LENGTH_MASK;
@@ -514,19 +538,34 @@ public class AjpRequestParser {
         if (stringLength == 0xFFFF) {
             //OxFFFF means null
             state.stringLength = -1;
-            return new StringHolder(null, true, false);
+            return new StringHolder(null, true, false, false);
         }
         int length = state.getCurrentStringLength();
         while (length < stringLength) {
             if (!buf.hasRemaining()) {
                 state.stringLength = stringLength;
                 state.containsUrlCharacters = containsUrlCharacters;
-                return new StringHolder(null, false, false);
+                state.containsUnencodedUrlCharacters = containsUnencodedUrlCharacters;
+                return new StringHolder(null, false, false, false);
             }
             byte c = buf.get();
-            if(type == StringType.QUERY_STRING && (c == '+' || c == '%')) {
-                    containsUrlCharacters = true;
-            } else if(type == StringType.URL && c == '%') {
+            if(type == StringType.QUERY_STRING && (c == '+' || c == '%' || c < 0 )) {
+                if (c < 0) {
+                    if (!allowUnescapedCharactersInUrl) {
+                        throw new BadRequestException();
+                    } else {
+                        containsUnencodedUrlCharacters = true;
+                    }
+                }
+                containsUrlCharacters = true;
+            } else if(type == StringType.URL && (c == '%' || c < 0 )) {
+                if(c < 0 ) {
+                    if(!allowUnescapedCharactersInUrl) {
+                        throw new BadRequestException();
+                    } else {
+                        containsUnencodedUrlCharacters = true;
+                    }
+                }
                 containsUrlCharacters = true;
             }
             state.addStringByte(c);
@@ -535,14 +574,16 @@ public class AjpRequestParser {
 
         if (buf.hasRemaining()) {
             buf.get(); //null terminator
-            String value = state.getStringAndClear(encoding);
+            String value = state.getStringAndClear();
             state.stringLength = -1;
             state.containsUrlCharacters = false;
-            return new StringHolder(value, true, containsUrlCharacters);
+            state.containsUnencodedUrlCharacters = containsUnencodedUrlCharacters;
+            return new StringHolder(value, true, containsUrlCharacters, containsUnencodedUrlCharacters);
         } else {
             state.stringLength = stringLength;
             state.containsUrlCharacters = containsUrlCharacters;
-            return new StringHolder(null, false, false);
+            state.containsUnencodedUrlCharacters = containsUnencodedUrlCharacters;
+            return new StringHolder(null, false, false, false);
         }
     }
 
@@ -559,13 +600,15 @@ public class AjpRequestParser {
     protected static class StringHolder {
         public final String value;
         public final HttpString header;
-        public final boolean readComplete;
-        public final boolean containsUrlCharacters;
+        final boolean readComplete;
+        final boolean containsUrlCharacters;
+        final boolean containsUnencodedCharacters;
 
-        private StringHolder(String value, boolean readComplete, boolean containsUrlCharacters) {
+        private StringHolder(String value, boolean readComplete, boolean containsUrlCharacters, boolean containsUnencodedCharacters) {
             this.value = value;
             this.readComplete = readComplete;
             this.containsUrlCharacters = containsUrlCharacters;
+            this.containsUnencodedCharacters = containsUnencodedCharacters;
             this.header = null;
         }
 
@@ -574,6 +617,7 @@ public class AjpRequestParser {
             this.readComplete = true;
             this.header = value;
             this.containsUrlCharacters = false;
+            this.containsUnencodedCharacters = false;
         }
     }
 

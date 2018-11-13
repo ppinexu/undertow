@@ -18,6 +18,7 @@
 package io.undertow.servlet.spec;
 
 import io.undertow.Version;
+import io.undertow.server.HandlerWrapper;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.handlers.cache.LRUCache;
 import io.undertow.server.handlers.resource.Resource;
@@ -67,6 +68,7 @@ import javax.servlet.ServletContext;
 import javax.servlet.ServletContextListener;
 import javax.servlet.ServletException;
 import javax.servlet.ServletRegistration;
+import javax.servlet.ServletRequest;
 import javax.servlet.SessionTrackingMode;
 import javax.servlet.WriteListener;
 import javax.servlet.annotation.HttpMethodConstraint;
@@ -92,6 +94,7 @@ import java.util.Enumeration;
 import java.util.EventListener;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -127,6 +130,7 @@ public class ServletContextImpl implements ServletContext {
     private volatile ThreadSetupHandler.Action<Void, ReadListener> onDataAvailableTask;
     private volatile ThreadSetupHandler.Action<Void, ReadListener> onAllDataReadTask;
     private volatile ThreadSetupHandler.Action<Void, ThreadSetupHandler.Action<Void, Object>> invokeActionTask;
+    private volatile int defaultSessionTimeout;
 
     public ServletContextImpl(final ServletContainer servletContainer, final Deployment deployment) {
         this.servletContainer = servletContainer;
@@ -141,7 +145,7 @@ public class ServletContextImpl implements ServletContext {
         }
         attributes.putAll(deployment.getDeploymentInfo().getServletContextAttributes());
         this.contentTypeCache = new LRUCache<>(deployment.getDeploymentInfo().getContentTypeCacheSize(), -1, true);
-
+        this.defaultSessionTimeout = deploymentInfo.getDefaultSessionTimeout() / 60;
     }
 
     public void initDone() {
@@ -221,12 +225,12 @@ public class ServletContextImpl implements ServletContext {
 
     @Override
     public int getMajorVersion() {
-        return 3;
+        return deploymentInfo.getContainerMajorVersion();
     }
 
     @Override
     public int getMinorVersion() {
-        return 1;
+        return deploymentInfo.getContainerMinorVersion();
     }
 
     @Override
@@ -428,6 +432,9 @@ public class ServletContextImpl implements ServletContext {
 
     @Override
     public boolean setInitParameter(final String name, final String value) {
+        if(name == null) {
+            throw UndertowServletMessages.MESSAGES.paramCannotBeNullNPE("name");
+        }
         if (deploymentInfo.getInitParameters().containsKey(name)) {
             return false;
         }
@@ -485,14 +492,22 @@ public class ServletContextImpl implements ServletContext {
 
     @Override
     public ServletRegistration.Dynamic addServlet(final String servletName, final String className) {
+        return addServlet(servletName, className, Collections.emptyList());
+    }
+
+    public ServletRegistration.Dynamic addServlet(final String servletName, final String className, List<HandlerWrapper> wrappers) {
         ensureNotProgramaticListener();
         ensureNotInitialized();
+        ensureServletNameNotNull(servletName);
         try {
             if (deploymentInfo.getServlets().containsKey(servletName)) {
                 return null;
             }
             Class<? extends Servlet> servletClass=(Class<? extends Servlet>) deploymentInfo.getClassLoader().loadClass(className);
             ServletInfo servlet = new ServletInfo(servletName, servletClass, deploymentInfo.getClassIntrospecter().createInstanceFactory(servletClass));
+            for(HandlerWrapper i : wrappers) {
+                servlet.addHandlerChainWrapper(i);
+            }
             readServletAnnotations(servlet);
             deploymentInfo.addServlet(servlet);
             ServletHandler handler = deployment.getServlets().addServlet(servlet);
@@ -508,6 +523,7 @@ public class ServletContextImpl implements ServletContext {
     public ServletRegistration.Dynamic addServlet(final String servletName, final Servlet servlet) {
         ensureNotProgramaticListener();
         ensureNotInitialized();
+        ensureServletNameNotNull(servletName);
         if (deploymentInfo.getServlets().containsKey(servletName)) {
             return null;
         }
@@ -522,6 +538,7 @@ public class ServletContextImpl implements ServletContext {
     public ServletRegistration.Dynamic addServlet(final String servletName, final Class<? extends Servlet> servletClass){
         ensureNotProgramaticListener();
         ensureNotInitialized();
+        ensureServletNameNotNull(servletName);
         if (deploymentInfo.getServlets().containsKey(servletName)) {
             return null;
         }
@@ -533,6 +550,12 @@ public class ServletContextImpl implements ServletContext {
             return new ServletRegistrationImpl(servlet, handler.getManagedServlet(), deployment);
         } catch (NoSuchMethodException e) {
             throw UndertowServletMessages.MESSAGES.couldNotCreateFactory(servletClass.getName(),e);
+        }
+    }
+
+    private void ensureServletNameNotNull(String servletName) {
+        if(servletName == null) {
+            throw UndertowServletMessages.MESSAGES.servletNameNull();
         }
     }
 
@@ -748,17 +771,27 @@ public class ServletContextImpl implements ServletContext {
 
     @Override
     public ServletRegistration.Dynamic addJspFile(String servletName, String jspFile) {
-        return null;
+        if(servletName == null || servletName.isEmpty()) {
+            throw UndertowServletMessages.MESSAGES.paramCannotBeNull("servletName");
+        }
+        return addServlet(servletName, "org.apache.jasper.servlet.JspServlet", Collections.singletonList(handler -> exchange -> {
+            ServletRequest request = exchange.getAttachment(ServletRequestContext.ATTACHMENT_KEY).getServletRequest();
+            request.setAttribute(System.getProperty("org.apache.jasper.Constants.JSP_FILE", "org.apache.catalina.jsp_file"), jspFile);
+            handler.handleRequest(exchange);
+        }));
     }
 
     @Override
     public int getSessionTimeout() {
-        return 0;
+        return defaultSessionTimeout;
     }
 
     @Override
     public void setSessionTimeout(int sessionTimeout) {
-
+        ensureNotInitialized();
+        ensureNotProgramaticListener();
+        this.defaultSessionTimeout = sessionTimeout;
+        deployment.getSessionManager().setDefaultSessionTimeout(sessionTimeout * 60);
     }
 
     @Override
@@ -833,7 +866,35 @@ public class ServletContextImpl implements ServletContext {
                 if (originalServletContext != this) {
                     //this is a cross context request
                     //we need to make sure there is a top level session
-                    originalServletContext.getSession(originalServletContext, exchange, true);
+                    final HttpSessionImpl topLevel = originalServletContext.getSession(originalServletContext, exchange, true);
+                    //override the session id to just return the same ID as the top level session
+
+                    c = new SessionConfig() {
+                        @Override
+                        public void setSessionId(HttpServerExchange exchange, String sessionId) {
+                            //noop
+                        }
+
+                        @Override
+                        public void clearSession(HttpServerExchange exchange, String sessionId) {
+                            //noop
+                        }
+
+                        @Override
+                        public String findSessionId(HttpServerExchange exchange) {
+                            return topLevel.getId();
+                        }
+
+                        @Override
+                        public SessionCookieSource sessionCookieSource(HttpServerExchange exchange) {
+                            return SessionCookieSource.NONE;
+                        }
+
+                        @Override
+                        public String rewriteUrl(String originalUrl, String sessionId) {
+                            return null;
+                        }
+                    };
                 } else if (existing != null) {
                     if(deploymentInfo.isCheckOtherSessionManagers()) {
                         boolean found = false;

@@ -71,15 +71,20 @@ import io.undertow.util.Protocols;
 class AjpClientConnection extends AbstractAttachable implements Closeable, ClientConnection {
 
     public final ChannelListener<AjpClientRequestClientStreamSinkChannel> requestFinishListener = new ChannelListener<AjpClientRequestClientStreamSinkChannel>() {
+
         @Override
         public void handleEvent(AjpClientRequestClientStreamSinkChannel channel) {
-            currentRequest.terminateRequest();
+            if(currentRequest != null) {
+                currentRequest.terminateRequest();
+            }
         }
     };
     public final ChannelListener<AjpClientResponseStreamSourceChannel> responseFinishedListener = new ChannelListener<AjpClientResponseStreamSourceChannel>() {
         @Override
         public void handleEvent(AjpClientResponseStreamSourceChannel channel) {
-            currentRequest.terminateResponse();
+            if(currentRequest != null) {
+                currentRequest.terminateResponse();
+            }
         }
     };
 
@@ -355,9 +360,16 @@ class AjpClientConnection extends AbstractAttachable implements Closeable, Clien
                 AbstractAjpClientStreamSourceChannel result = channel.receive();
                 if(result == null) {
                     if(!channel.isOpen()) {
-                        if(currentRequest != null) {
-                            currentRequest.setFailed(new ClosedChannelException());
-                        }
+                        //we execute this in a runnable
+                        //as there may be close/data frames that need to be processed
+                        getIoThread().execute(new Runnable() {
+                            @Override
+                            public void run() {
+                                if(currentRequest != null) {
+                                    currentRequest.setFailed(new ClosedChannelException());
+                                }
+                            }
+                        });
                     }
                     return;
                 }

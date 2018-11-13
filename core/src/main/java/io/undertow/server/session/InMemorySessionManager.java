@@ -101,7 +101,7 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
         this.sessions = new ConcurrentHashMap<>();
         this.maxSize = maxSessions;
         ConcurrentDirectDeque<String> evictionQueue = null;
-        if (maxSessions > 0) {
+        if (maxSessions > 0 && expireOldestUnusedSessionOnMax) {
             evictionQueue = ConcurrentDirectDeque.newInstance();
         }
         this.evictionQueue = evictionQueue;
@@ -140,7 +140,7 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
 
     @Override
     public Session createSession(final HttpServerExchange serverExchange, final SessionConfig config) {
-        if (evictionQueue != null) {
+        if (maxSize > 0) {
             if(expireOldestUnusedSessionOnMax) {
                 while (sessions.size() >= maxSize && !evictionQueue.isEmpty()) {
 
@@ -185,7 +185,6 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
         UndertowLogger.SESSION_LOGGER.debugf("Created session with id %s for exchange %s", sessionID, serverExchange);
         sessions.put(sessionID, session);
         config.setSessionId(serverExchange, session.getId());
-        session.lastAccessed = System.currentTimeMillis();
         session.bumpTimeout();
         sessionListeners.sessionCreated(session, serverExchange);
         serverExchange.putAttachment(NEW_SESSION, session);
@@ -215,7 +214,7 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
         }
         String sessionId = config.findSessionId(serverExchange);
         InMemorySessionManager.SessionImpl session = (SessionImpl) getSession(sessionId);
-        if(session != null) {
+        if(session != null && serverExchange != null) {
             session.requestStarted(serverExchange);
         }
         return session;
@@ -346,7 +345,7 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
     private static class SessionImpl implements Session {
 
 
-        final AttachmentKey<Boolean> FIRST_REQUEST_ACCESS = AttachmentKey.create(Boolean.class);
+        final AttachmentKey<Long> FIRST_REQUEST_ACCESS = AttachmentKey.create(Long.class);
         final InMemorySessionManager sessionManager;
         final ConcurrentMap<String, Object> attributes = new ConcurrentHashMap<>();
         volatile long lastAccessed;
@@ -429,10 +428,10 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
                 expireTime = newExpireTime;
                 UndertowLogger.SESSION_LOGGER.tracef("Bumping timeout for session %s to %s", sessionId, expireTime);
                 if(timerCancelKey == null) {
-                    //+500ms, to make sure that the time has actually expired
+                    //+1, to make sure that the time has actually expired
                     //we don't re-schedule every time, as it is expensive
                     //instead when it expires we check if the timeout has been bumped, and if so we re-schedule
-                    timerCancelKey = executor.executeAfter(cancelTask, (maxInactiveInterval * 1000L) + 500L, TimeUnit.MILLISECONDS);
+                    timerCancelKey = executor.executeAfter(cancelTask, (maxInactiveInterval * 1000L) + 1L, TimeUnit.MILLISECONDS);
                 }
             } else {
                 expireTime = -1;
@@ -457,17 +456,20 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
         }
 
         void requestStarted(HttpServerExchange serverExchange) {
-            Boolean existing = serverExchange.getAttachment(FIRST_REQUEST_ACCESS);
+            Long existing = serverExchange.getAttachment(FIRST_REQUEST_ACCESS);
             if(existing == null) {
                 if (!invalid) {
-                    lastAccessed = System.currentTimeMillis();
+                    serverExchange.putAttachment(FIRST_REQUEST_ACCESS, System.currentTimeMillis());
                 }
-                serverExchange.putAttachment(FIRST_REQUEST_ACCESS, Boolean.TRUE);
             }
         }
 
         @Override
         public void requestDone(final HttpServerExchange serverExchange) {
+            Long existing = serverExchange.getAttachment(FIRST_REQUEST_ACCESS);
+            if(existing != null) {
+                lastAccessed = existing;
+            }
         }
 
         @Override
@@ -558,6 +560,10 @@ public class InMemorySessionManager implements SessionManager, SessionManagerSta
             invalidate(exchange, SessionListener.SessionDestroyedReason.INVALIDATED);
             if(exchange != null) {
                 exchange.removeAttachment(sessionManager.NEW_SESSION);
+            }
+            Object evictionToken = this.evictionToken;
+            if(evictionToken != null) {
+                sessionManager.evictionQueue.removeToken(evictionToken);
             }
         }
 
