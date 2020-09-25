@@ -80,7 +80,60 @@ public class RangeRequestTestCase {
     }
     @Test
     public void testCachedResourceHandler() throws IOException, InterruptedException {
-        runTest("/cachedresource/range.txt", false);
+        for(int i = 0; i < 10; ++i) {
+            runTest("/cachedresource/range.txt", false);
+        }
+    }
+
+    @Test
+    public void testLargeCachedResourceHandler() throws IOException, InterruptedException {
+        String path = "/cachedresource/largerange.txt";
+        TestHttpClient client = new TestHttpClient();
+        try {
+            for(int i = 0; i < 3; ++i) {
+                HttpGet get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+                HttpResponse result = client.execute(get);
+                Assert.assertEquals(StatusCodes.OK, result.getStatusLine().getStatusCode());
+                client.getConnectionManager().shutdown();
+                client = new TestHttpClient();
+            }
+
+            for(int i = 0; i < 10; ++i) {
+                HttpGet get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+                get.addHeader(Headers.RANGE_STRING, "bytes=10-20");
+                HttpResponse result = client.execute(get);
+                Assert.assertEquals(StatusCodes.PARTIAL_CONTENT, result.getStatusLine().getStatusCode());
+                String response = EntityUtils.toString(result.getEntity());
+                Assert.assertEquals("89#2:012345", response);
+                Assert.assertEquals( "bytes 10-20/1034", result.getFirstHeader(Headers.CONTENT_RANGE_STRING).getValue());
+
+                get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+                get.addHeader(Headers.RANGE_STRING, "bytes=1000-1024");
+                result = client.execute(get);
+                Assert.assertEquals(StatusCodes.PARTIAL_CONTENT, result.getStatusLine().getStatusCode());
+                response = EntityUtils.toString(result.getEntity());
+                Assert.assertEquals("3:0123456789#74:012345678", response);
+                Assert.assertEquals( "bytes 1000-1024/1034", result.getFirstHeader(Headers.CONTENT_RANGE_STRING).getValue());
+
+                get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+                get.addHeader(Headers.RANGE_STRING, "bytes=1001-1024");
+                result = client.execute(get);
+                Assert.assertEquals(StatusCodes.PARTIAL_CONTENT, result.getStatusLine().getStatusCode());
+                response = EntityUtils.toString(result.getEntity());
+                Assert.assertEquals(":0123456789#74:012345678", response);
+                Assert.assertEquals( "bytes 1001-1024/1034", result.getFirstHeader(Headers.CONTENT_RANGE_STRING).getValue());
+
+                get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+                get.addHeader(Headers.RANGE_STRING, "bytes=1025-1030");
+                result = client.execute(get);
+                Assert.assertEquals(StatusCodes.PARTIAL_CONTENT, result.getStatusLine().getStatusCode());
+                response = EntityUtils.toString(result.getEntity());
+                Assert.assertEquals("9abcde", response);
+                Assert.assertEquals( "bytes 1025-1030/1034", result.getFirstHeader(Headers.CONTENT_RANGE_STRING).getValue());
+            }
+        } finally {
+            client.getConnectionManager().shutdown();
+        }
     }
 
     public void runTest(String path, boolean etag) throws IOException, InterruptedException {
@@ -161,6 +214,14 @@ public class RangeRequestTestCase {
 
             get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
             get.addHeader(Headers.RANGE_STRING, "bytes=2-1");
+            result = client.execute(get);
+            Assert.assertEquals(StatusCodes.REQUEST_RANGE_NOT_SATISFIABLE, result.getStatusLine().getStatusCode());
+            response = EntityUtils.toString(result.getEntity());
+            Assert.assertEquals("", response);
+            Assert.assertEquals("bytes */10", result.getFirstHeader(Headers.CONTENT_RANGE_STRING).getValue());
+
+            get = new HttpGet(DefaultServer.getDefaultServerURL() + path);
+            get.addHeader(Headers.RANGE_STRING, "bytes=10-");
             result = client.execute(get);
             Assert.assertEquals(StatusCodes.REQUEST_RANGE_NOT_SATISFIABLE, result.getStatusLine().getStatusCode());
             response = EntityUtils.toString(result.getEntity());

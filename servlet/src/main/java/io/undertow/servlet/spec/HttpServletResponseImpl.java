@@ -23,6 +23,7 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -57,9 +58,9 @@ import io.undertow.util.StatusCodes;
 
 import static io.undertow.util.URLUtils.isAbsoluteUrl;
 
-
 /**
  * @author Stuart Douglas
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public final class HttpServletResponseImpl implements HttpServletResponse {
 
@@ -96,12 +97,12 @@ public final class HttpServletResponseImpl implements HttpServletResponse {
     }
 
     @Override
-    public void addCookie(final Cookie cookie) {
+    public void addCookie(final Cookie newCookie) {
         if (insideInclude) {
             return;
         }
-        final ServletCookieAdaptor servletCookieAdaptor = new ServletCookieAdaptor(cookie);
-        if (cookie.getVersion() == 0) {
+        final ServletCookieAdaptor servletCookieAdaptor = new ServletCookieAdaptor(newCookie);
+        if (newCookie.getVersion() == 0) {
             servletCookieAdaptor.setVersion(servletContext.getDeployment().getDeploymentInfo().getDefaultCookieVersion());
         }
         exchange.setResponseCookie(servletCookieAdaptor);
@@ -324,10 +325,20 @@ public final class HttpServletResponseImpl implements HttpServletResponse {
 
     @Override
     public String getCharacterEncoding() {
-        if (charset == null) {
-            return servletContext.getDeployment().getDefaultResponseCharset().name();
+        if (charset != null) {
+            return charset;
         }
-        return charset;
+        // first check, web-app context level default response encoding
+        if (servletContext.getDeployment().getDeploymentInfo().getDefaultResponseEncoding() != null) {
+            return servletContext.getDeployment().getDeploymentInfo().getDefaultResponseEncoding();
+        }
+        // now check the container level default encoding
+        if (servletContext.getDeployment().getDeploymentInfo().getDefaultEncoding() != null) {
+            return servletContext.getDeployment().getDeploymentInfo().getDefaultEncoding();
+        }
+        // if no explicit encoding is specified, this method is supposed to return ISO-8859-1 as per the
+        // expectation of this API
+        return StandardCharsets.ISO_8859_1.name();
     }
 
     @Override
@@ -804,4 +815,5 @@ public final class HttpServletResponseImpl implements HttpServletResponse {
     public Supplier<Map<String, String>> getTrailerFields() {
         return trailerSupplier;
     }
+
 }

@@ -18,11 +18,12 @@
 
 package io.undertow.protocols.ssl;
 
-import static org.xnio.IoUtils.safeClose;
-
 import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.net.URI;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
@@ -39,6 +40,9 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 
+import io.undertow.UndertowOptions;
+import io.undertow.connector.ByteBufferPool;
+import io.undertow.server.DefaultByteBufferPool;
 import org.xnio.ChannelListener;
 import org.xnio.ChannelListeners;
 import org.xnio.FutureResult;
@@ -48,6 +52,7 @@ import org.xnio.Option;
 import org.xnio.OptionMap;
 import org.xnio.Options;
 import org.xnio.Sequence;
+import org.xnio.SslClientAuthMode;
 import org.xnio.StreamConnection;
 import org.xnio.Xnio;
 import org.xnio.XnioExecutor;
@@ -63,8 +68,7 @@ import org.xnio.ssl.JsseXnioSsl;
 import org.xnio.ssl.SslConnection;
 import org.xnio.ssl.XnioSsl;
 
-import io.undertow.connector.ByteBufferPool;
-import io.undertow.server.DefaultByteBufferPool;
+import static org.xnio.IoUtils.safeClose;
 
 /**
  * @author Stuart Douglas
@@ -203,12 +207,32 @@ public class UndertowXnioSsl extends XnioSsl {
         return new UndertowSslConnection(connection, createSSLEngine(sslContext, optionMap, (InetSocketAddress) connection.getPeerAddress(), clientMode), bufferPool);
     }
 
+    public SslConnection wrapExistingConnection(StreamConnection connection, OptionMap optionMap, URI destinationURI) {
+        SSLEngine sslEngine = createSSLEngine(sslContext, optionMap, getPeerAddress(destinationURI), true);
+        SSLParameters sslParameters = sslEngine.getSSLParameters();
+        if (sslParameters.getServerNames() == null || sslParameters.getServerNames().isEmpty()) {
+            sslParameters.setServerNames(Collections.singletonList(new SNIHostName(destinationURI.getHost())));
+            sslEngine.setSSLParameters(sslParameters);
+        }
+        return new UndertowSslConnection(connection, sslEngine, bufferPool);
+    }
+
+    private InetSocketAddress getPeerAddress(URI destinationURI) {
+        String hostname = destinationURI.getHost();
+        int port = destinationURI.getPort();
+        if (port == -1) {
+            port = destinationURI.getScheme().equals("wss") ? 443 : 80;
+        }
+        return new InetSocketAddress(hostname, port);
+    }
+
     /**
      * Create a new  SSL engine, configured from an option map.
      *
      * @param sslContext the SSL context
      * @param optionMap the SSL options
      * @param peerAddress the peer address of the connection
+     * @param client whether this SSL connection is run in client mode
      * @return the configured SSL engine
      */
     private static SSLEngine createSSLEngine(SSLContext sslContext, OptionMap optionMap, InetSocketAddress peerAddress, boolean client) {
@@ -239,6 +263,37 @@ public class UndertowXnioSsl extends XnioSsl {
                 }
             }
             engine.setEnabledProtocols(finalList.toArray(new String[finalList.size()]));
+        }
+        if (!client) {
+            final SslClientAuthMode clientAuthMode = optionMap.get(Options.SSL_CLIENT_AUTH_MODE);
+            if (clientAuthMode != null) {
+                switch (clientAuthMode) {
+                    case NOT_REQUESTED:
+                        engine.setNeedClientAuth(false);
+                        engine.setWantClientAuth(false);
+                        break;
+                    case REQUESTED:
+                        engine.setWantClientAuth(true);
+                        break;
+                    case REQUIRED:
+                        engine.setNeedClientAuth(true);
+                        break;
+                    default:
+                        throw new IllegalStateException();
+                }
+            }
+        }
+        boolean useCipherSuitesOrder = optionMap.get(UndertowOptions.SSL_USER_CIPHER_SUITES_ORDER, false);
+        if (useCipherSuitesOrder) {
+            SSLParameters sslParameters = engine.getSSLParameters();
+            sslParameters.setUseCipherSuitesOrder(true);
+            engine.setSSLParameters(sslParameters);
+        }
+        final String endpointIdentificationAlgorithm = optionMap.get(UndertowOptions.ENDPOINT_IDENTIFICATION_ALGORITHM, null);
+        if (endpointIdentificationAlgorithm != null) {
+            SSLParameters sslParameters = engine.getSSLParameters();
+            sslParameters.setEndpointIdentificationAlgorithm(endpointIdentificationAlgorithm);
+            engine.setSSLParameters(sslParameters);
         }
         return engine;
     }
@@ -377,7 +432,19 @@ public class UndertowXnioSsl extends XnioSsl {
 
                 SSLEngine sslEngine = JsseSslUtils.createSSLEngine(sslContext, optionMap, destination);
                 SSLParameters params = sslEngine.getSSLParameters();
-                params.setServerNames(Collections.singletonList(new SNIHostName(destination.getHostString())));
+                InetAddress address = destination.getAddress();
+                String hostnameValue = destination.getHostString();
+                if (address instanceof Inet6Address && hostnameValue.contains(":")) {
+                    // WFLY-13748 get hostname value instead of IPV6adress if it's ipv6
+                    // SNIHostname throw exception if adress contains :
+                    hostnameValue = address.getHostName();
+                }
+                params.setServerNames(Collections.singletonList(new SNIHostName(hostnameValue)));
+                final String endpointIdentificationAlgorithm = optionMap.get(UndertowOptions.ENDPOINT_IDENTIFICATION_ALGORITHM, null);
+                if (endpointIdentificationAlgorithm != null) {
+                    params.setEndpointIdentificationAlgorithm(endpointIdentificationAlgorithm);
+                }
+
                 sslEngine.setSSLParameters(params);
 
                 final SslConnection wrappedConnection = new UndertowSslConnection(connection, sslEngine, bufferPool);

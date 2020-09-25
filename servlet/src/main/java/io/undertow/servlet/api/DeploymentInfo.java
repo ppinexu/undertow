@@ -20,6 +20,7 @@ package io.undertow.servlet.api;
 
 import java.io.File;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -107,6 +108,7 @@ public class DeploymentInfo implements Cloneable {
     private boolean escapeErrorMessage = true;
     private boolean sendCustomReasonPhraseOnError = false;
     private boolean useCachedAuthenticationMechanism = true;
+    private boolean preservePathOnForward = true;
     private AuthenticationMode authenticationMode = AuthenticationMode.PRO_ACTIVE;
     private ExceptionHandler exceptionHandler;
     private final Map<String, ServletInfo> servlets = new HashMap<>();
@@ -652,6 +654,18 @@ public class DeploymentInfo implements Cloneable {
 
     public Path getTempPath() {
         return tempDir;
+    }
+
+    /**
+     * @return Returns the {@link #getTempDir() temp directory path} if it's
+     * not null, else returns the system level temporary directory path
+     * pointed to by the Java system property {@code java.io.tmpdir}
+     */
+    public Path requireTempPath() {
+        if (tempDir != null) {
+            return tempDir;
+        }
+        return Paths.get(SecurityActions.getSystemProperty("java.io.tmpdir"));
     }
 
     public DeploymentInfo setTempDir(final File tempDir) {
@@ -1365,6 +1379,14 @@ public class DeploymentInfo implements Cloneable {
         return this;
     }
 
+    public boolean isPreservePathOnForward() {
+        return preservePathOnForward;
+    }
+
+    public void setPreservePathOnForward(boolean preservePathOnForward) {
+        this.preservePathOnForward = preservePathOnForward;
+    }
+
     /**
      * Add's a listener that is only invoked once all other deployment steps have been completed
      *
@@ -1477,6 +1499,7 @@ public class DeploymentInfo implements Cloneable {
         info.containerMajorVersion = containerMajorVersion;
         info.containerMinorVersion = containerMinorVersion;
         info.deploymentCompleteListeners.addAll(deploymentCompleteListeners);
+        info.preservePathOnForward = preservePathOnForward;
         return info;
     }
 

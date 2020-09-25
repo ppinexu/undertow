@@ -18,12 +18,12 @@
 
 package io.undertow.protocols.http2;
 
+import static io.undertow.protocols.http2.Hpack.HeaderField;
+
 import java.nio.ByteBuffer;
 
 import io.undertow.UndertowMessages;
 import io.undertow.util.HttpString;
-
-import static io.undertow.protocols.http2.Hpack.HeaderField;
 
 /**
  * A decoder for HPACK.
@@ -229,6 +229,9 @@ public class HpackDecoder {
             String string = readHpackString(buffer);
             if (string == null) {
                 return null;
+            } else if (string.isEmpty()) {
+                //don't allow empty header names
+                throw new HpackException();
             }
             return new HttpString(string);
         }
@@ -253,12 +256,19 @@ public class HpackDecoder {
         }
         String ret = stringBuilder.toString();
         stringBuilder.setLength(0);
+        if (ret.isEmpty()) {
+            //return the interned empty string, rather than allocating a new one each time
+            return "";
+        }
         return ret;
     }
 
     private String readHuffmanString(int length, ByteBuffer buffer) throws HpackException {
         HPackHuffman.decode(buffer, length, stringBuilder);
         String ret = stringBuilder.toString();
+        if (ret.isEmpty()) {
+            return "";
+        }
         stringBuilder.setLength(0);
         return ret;
     }
@@ -267,7 +277,7 @@ public class HpackDecoder {
         if (index <= Hpack.STATIC_TABLE_LENGTH) {
             return Hpack.STATIC_TABLE[index].name;
         } else {
-            if (index >= Hpack.STATIC_TABLE_LENGTH + filledTableSlots) {
+            if (index > Hpack.STATIC_TABLE_LENGTH + filledTableSlots) {
                 throw new HpackException();
             }
             int adjustedIndex = getRealIndex(index - Hpack.STATIC_TABLE_LENGTH);
@@ -298,7 +308,7 @@ public class HpackDecoder {
     /**
      * because we use a ring buffer type construct, and don't actually shuffle
      * items in the array, we need to figure out he real index to use.
-     * <p/>
+     * <p>
      * package private for unit tests
      *
      * @param index The index from the hpack

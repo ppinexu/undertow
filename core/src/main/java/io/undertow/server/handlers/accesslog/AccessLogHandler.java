@@ -20,6 +20,7 @@ package io.undertow.server.handlers.accesslog;
 
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -53,6 +54,8 @@ import io.undertow.server.handlers.builder.HandlerBuilder;
  * <li><b>%H</b> - Request protocol
  * <li><b>%l</b> - Remote logical username from identd (always returns '-')
  * <li><b>%m</b> - Request method
+ * <li><b>%o</b> - Obfuscated remote IP address (IPv4: last byte removed,
+ * IPv6: cut off after second colon, ie. '1.2.3.' or 'fe08:44:')
  * <li><b>%p</b> - Local port
  * <li><b>%q</b> - Query string (excluding the '?' character)
  * <li><b>%r</b> - First line of the request
@@ -71,6 +74,9 @@ import io.undertow.server.handlers.builder.HandlerBuilder;
  * <li><b>common</b> - <code>%h %l %u %t "%r" %s %b</code>
  * <li><b>combined</b> -
  * <code>%h %l %u %t "%r" %s %b "%{i,Referer}" "%{i,User-Agent}"</code>
+ * <li><b>commonobf</b> - <code>%o %l %u %t "%r" %s %b</code>
+ * <li><b>combinedobf</b> -
+ * <code>%o %l %u %t "%r" %s %b "%{i,Referer}" "%{i,User-Agent}"</code>
  * </ul>
  * <p>
  * <p>
@@ -127,6 +133,10 @@ public class AccessLogHandler implements HttpHandler {
             return "%h %l %u %t \"%r\" %s %b";
         } else if (formatString.equals("combined")) {
             return "%h %l %u %t \"%r\" %s %b \"%{i,Referer}\" \"%{i,User-Agent}\"";
+        } else if(formatString.equals("commonobf")) {
+            return "%o %l %u %t \"%r\" %s %b";
+        } else if (formatString.equals("combinedobf")) {
+            return "%o %l %u %t \"%r\" %s %b \"%{i,Referer}\" \"%{i,User-Agent}\"";
         }
         return formatString;
     }
@@ -167,7 +177,10 @@ public class AccessLogHandler implements HttpHandler {
 
         @Override
         public Map<String, Class<?>> parameters() {
-            return Collections.<String, Class<?>>singletonMap("format", String.class);
+            Map<String, Class<?>> params = new HashMap<>();
+            params.put("format", String.class);
+            params.put("category", String.class);
+            return params;
         }
 
         @Override
@@ -182,7 +195,7 @@ public class AccessLogHandler implements HttpHandler {
 
         @Override
         public HandlerWrapper build(Map<String, Object> config) {
-            return new Wrapper((String) config.get("format"));
+            return new Wrapper((String) config.get("format"), (String) config.get("category"));
         }
 
     }
@@ -190,14 +203,20 @@ public class AccessLogHandler implements HttpHandler {
     private static class Wrapper implements HandlerWrapper {
 
         private final String format;
+        private final String category;
 
-        private Wrapper(String format) {
+        private Wrapper(String format, String category) {
             this.format = format;
+            this.category = category;
         }
 
         @Override
         public HttpHandler wrap(HttpHandler handler) {
-            return new AccessLogHandler(handler, new JBossLoggingAccessLogReceiver(), format, Wrapper.class.getClassLoader());
+            if (category == null || category.trim().isEmpty()) {
+                return new AccessLogHandler(handler, new JBossLoggingAccessLogReceiver(), format, Wrapper.class.getClassLoader());
+            } else {
+                return new AccessLogHandler(handler, new JBossLoggingAccessLogReceiver(category), format, Wrapper.class.getClassLoader());
+            }
         }
     }
 }

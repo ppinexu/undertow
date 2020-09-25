@@ -18,10 +18,10 @@
 
 package io.undertow.server.handlers.accesslog;
 
+import java.io.BufferedWriter;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -42,7 +42,7 @@ import io.undertow.UndertowLogger;
 /**
  * Log Receiver that stores logs in a directory under the specified file name, and rotates them after
  * midnight.
- * <p/>
+ * <p>
  * Web threads do not touch the log file, but simply queue messages to be written later by a worker thread.
  * A lightweight CAS based locking mechanism is used to ensure than only 1 thread is active writing messages at
  * any given time
@@ -59,6 +59,7 @@ public class DefaultAccessLogReceiver implements AccessLogReceiver, Runnable, Cl
     //0 = not running
     //1 = queued
     //2 = running
+    //3 = final state of running (inside finally of run())
     @SuppressWarnings("unused")
     private volatile int state = 0;
 
@@ -74,7 +75,7 @@ public class DefaultAccessLogReceiver implements AccessLogReceiver, Runnable, Cl
     private final String logBaseName;
     private final String logNameSuffix;
 
-    private Writer writer = null;
+    private BufferedWriter writer = null;
 
     private volatile boolean closed = false;
     private boolean initialRun = true;
@@ -188,22 +189,40 @@ public class DefaultAccessLogReceiver implements AccessLogReceiver, Runnable, Cl
                 writeMessage(messages);
             }
         } finally {
-            stateUpdater.set(this, 0);
+            // change this state to final state
+            stateUpdater.set(this, 3);
             //check to see if there is still more messages
             //if so then run this again
             if (!pendingMessages.isEmpty() || forceLogRotation) {
-                if (stateUpdater.compareAndSet(this, 0, 1)) {
+                if (stateUpdater.compareAndSet(this, 3, 1)) {
                     logWriteExecutor.execute(this);
                 }
-            } else if (closed) {
-                try {
-                    if(writer != null) {
-                        writer.flush();
-                        writer.close();
-                        writer = null;
+            }
+            // Check the state before resetting the state to 0 (not running) and checking if a writer needs to be closed:
+            // - If state != 3 here, another thread is executing this.
+            //   The other thread will visit here and will check if a writer needs to be closed.
+            //   We can leave state and skip closing a writer.
+            // - If state == 3 here, there is no another thread executing this.
+            //   So, update the state to 0 (not running) and check if a writer needs be closed.
+            if (stateUpdater.compareAndSet(this, 3, 0) && closed) {
+                // As close() can be invoked from another thread in parallel,
+                // it will dispatch a new thread to close writer if state == 0 (not running) at that moment.
+                // So, just in case, check the state again:
+                // - if state != 0, another thread has already dispatched from close() and it will visit here. So, closing writer can be skipped here.
+                // - if state == 0, writer can be closed here. Let's change state to 3 again in order to prevent close() from dispatching a new thread.
+                if (stateUpdater.compareAndSet(this, 0, 3)) {
+                    try {
+                        if(writer != null) {
+                            writer.flush();
+                            writer.close();
+                            writer = null;
+                        }
+                    } catch (IOException e) {
+                        UndertowLogger.ROOT_LOGGER.errorWritingAccessLog(e);
+                    } finally {
+                        // reset the state to 0 again finally
+                        stateUpdater.set(this, 0);
                     }
-                } catch (IOException e) {
-                    UndertowLogger.ROOT_LOGGER.errorWritingAccessLog(e);
                 }
             }
         }
@@ -212,7 +231,7 @@ public class DefaultAccessLogReceiver implements AccessLogReceiver, Runnable, Cl
     /**
      * For tests only. Blocks the current thread until all messages are written
      * Just does a busy wait.
-     * <p/>
+     * <p>
      * DO NOT USE THIS OUTSIDE OF A TEST
      */
     void awaitWrittenForTest() throws InterruptedException {
@@ -236,14 +255,14 @@ public class DefaultAccessLogReceiver implements AccessLogReceiver, Runnable, Cl
                     String header = fileHeaderGenerator.generateHeader();
                     if(header != null) {
                         writer.write(header);
-                        writer.write("\n");
+                        writer.newLine();
                         writer.flush();
                     }
                 }
             }
             for (String message : messages) {
                 writer.write(message);
-                writer.write('\n');
+                writer.newLine();
             }
             writer.flush();
         } catch (IOException e) {

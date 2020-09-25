@@ -18,6 +18,7 @@
 
 package io.undertow.server.handlers;
 
+import io.undertow.UndertowLogger;
 import io.undertow.server.Connectors;
 import io.undertow.server.ExchangeCompletionListener;
 import io.undertow.server.HttpHandler;
@@ -35,7 +36,7 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
  * <p>
  * When the number of active requests goes over the configured max requests then requests will be suspended and queued.
  * <p>
- * If the queue is full requests will be rejected with a 513.
+ * If the queue is full requests will be rejected with a 503 Service Unavailable according to RFC7231 Section 6.6.4.
  * <p>
  * The reason why this is abstracted out into a separate class is so that multiple handlers can share the same state. This
  * allows for fine grained control of resources.
@@ -54,7 +55,7 @@ public class RequestLimit {
     /**
      * The handler that will be invoked if the queue is full.
      */
-    private volatile HttpHandler failureHandler = new ResponseCodeHandler(513);
+    private volatile HttpHandler failureHandler = new ResponseCodeHandler(503);
 
     private final Queue<SuspendedRequest> queue;
 
@@ -62,19 +63,24 @@ public class RequestLimit {
 
         @Override
         public void exchangeEvent(final HttpServerExchange exchange, final NextListener nextListener) {
-            try {
-                synchronized (RequestLimit.this) {
-                    final SuspendedRequest task = queue.poll();
-                    if (task != null) {
-                        task.exchange.addExchangeCompleteListener(COMPLETION_LISTENER);
-                        task.exchange.dispatch(task.next);
-                    } else {
-                        decrementRequests();
-                    }
+            SuspendedRequest task = null;
+            boolean found = false;
+            while ((task = queue.poll()) != null) {
+                try {
+                    task.exchange.addExchangeCompleteListener(COMPLETION_LISTENER);
+                    task.exchange.dispatch(task.next);
+                    found = true;
+                    break;
+                } catch (Throwable e) {
+                    UndertowLogger.ROOT_LOGGER.error("Suspended request was skipped", e);
                 }
-            } finally {
-                nextListener.proceed();
             }
+
+            if (!found) {
+                decrementRequests();
+            }
+
+            nextListener.proceed();
         }
     };
 

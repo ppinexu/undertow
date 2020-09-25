@@ -32,6 +32,7 @@ import org.xnio.ssl.XnioSsl;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
@@ -39,14 +40,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.undertow.server.handlers.proxy.ProxyConnectionPool.AvailabilityType.*;
+import static io.undertow.server.handlers.proxy.RouteIteratorFactory.*;
+import java.util.ArrayList;
+import java.util.List;
 import static org.xnio.IoUtils.safeClose;
 
 /**
  * Initial implementation of a load balancing proxy client. This initial implementation is rather simplistic, and
  * will likely change.
- * <p>
  *
  * @author Stuart Douglas
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public class LoadBalancingProxyClient implements ProxyClient {
 
@@ -83,11 +87,33 @@ public class LoadBalancingProxyClient implements ProxyClient {
     private final UndertowClient client;
 
     private final Map<String, Host> routes = new CopyOnWriteMap<>();
+    private RouteIteratorFactory routeIteratorFactory = new RouteIteratorFactory(RouteParsingStrategy.SINGLE, ParsingCompatibility.MOD_JK);
 
     private final ExclusivityChecker exclusivityChecker;
 
     private static final ProxyTarget PROXY_TARGET = new ProxyTarget() {
     };
+
+    @Override
+    public List<ProxyTarget> getAllTargets() {
+        List<ProxyTarget> arr = new ArrayList();
+        for (Host host : hosts) {
+            HostProxyTarget proxyTarget = new HostProxyTarget() {
+                Host host;
+                public void setHost(Host host) {
+                    this.host = host;
+                }
+                public String toString(){
+                    return host.getUri().toString();
+                }
+            };
+            proxyTarget.setHost(host);
+            arr.add(proxyTarget);
+        }
+        return arr;
+    }
+
+
 
     public LoadBalancingProxyClient() {
         this(UndertowClient.getInstance());
@@ -163,13 +189,28 @@ public class LoadBalancingProxyClient implements ProxyClient {
         return this;
     }
 
+    public LoadBalancingProxyClient setRouteParsingStrategy(RouteParsingStrategy routeParsingStrategy) {
+        this.routeIteratorFactory = new RouteIteratorFactory(routeParsingStrategy, ParsingCompatibility.MOD_JK, null);
+        return this;
+    }
+
+    /**
+     * Configures ranked route delimiter, enabling ranked routing parsing strategy.
+     */
+    public LoadBalancingProxyClient setRankedRoutingDelimiter(String rankedRoutingDelimiter) {
+        this.routeIteratorFactory = new RouteIteratorFactory(RouteParsingStrategy.RANKED, ParsingCompatibility.MOD_JK, rankedRoutingDelimiter);
+        return this;
+    }
+
     public synchronized LoadBalancingProxyClient addHost(final URI host) {
         return addHost(host, null, null);
     }
 
+
     public synchronized LoadBalancingProxyClient addHost(final URI host, XnioSsl ssl) {
         return addHost(host, null, ssl);
     }
+
 
     public synchronized LoadBalancingProxyClient addHost(final URI host, String jvmRoute) {
         return addHost(host, jvmRoute, null);
@@ -190,11 +231,9 @@ public class LoadBalancingProxyClient implements ProxyClient {
         return this;
     }
 
-
     public synchronized LoadBalancingProxyClient addHost(final URI host, String jvmRoute, XnioSsl ssl, OptionMap options) {
         return addHost(null, host, jvmRoute, ssl, options);
     }
-
 
     public synchronized LoadBalancingProxyClient addHost(final InetSocketAddress bindAddress, final URI host, String jvmRoute, XnioSsl ssl, OptionMap options) {
         Host h = new Host(jvmRoute, bindAddress, host, ssl, options);
@@ -309,12 +348,18 @@ public class LoadBalancingProxyClient implements ProxyClient {
         if (hosts.length == 0) {
             return null;
         }
-        Host sticky = findStickyHost(exchange);
-        if (sticky != null) {
-            if(attempted == null || !attempted.contains(sticky)) {
-                return sticky;
+
+        Iterator<CharSequence> parsedRoutes = parseRoutes(exchange);
+        while (parsedRoutes.hasNext()) {
+            // Attempt to find the first existing host which was not yet attempted
+            Host host = this.routes.get(parsedRoutes.next().toString());
+            if (host != null) {
+                if(attempted == null || !attempted.contains(host)) {
+                    return host;
+                }
             }
         }
+
         int host = hostSelector.selectHost(hosts);
 
         final int startHost = host; //if the all hosts have problems we come back to this one
@@ -344,25 +389,15 @@ public class LoadBalancingProxyClient implements ProxyClient {
         return null;
     }
 
-    protected Host findStickyHost(HttpServerExchange exchange) {
-        Map<String, Cookie> cookies = exchange.getRequestCookies();
+    protected Iterator<CharSequence> parseRoutes(HttpServerExchange exchange) {
         for (String cookieName : sessionCookieNames) {
-            Cookie sk = cookies.get(cookieName);
-            if (sk != null) {
-                int index = sk.getValue().indexOf('.');
-
-                if (index == -1) {
-                    continue;
+            for (Cookie cookie : exchange.requestCookies()) {
+                if (cookieName.equals(cookie.getName())) {
+                    return routeIteratorFactory.iterator(cookie.getValue());
                 }
-                String route = sk.getValue().substring(index + 1);
-                index = route.indexOf('.');
-                if (index != -1) {
-                    route = route.substring(0, index);
-                }
-                return routes.get(route);
             }
         }
-        return null;
+        return routeIteratorFactory.iterator(null);
     }
 
     /**

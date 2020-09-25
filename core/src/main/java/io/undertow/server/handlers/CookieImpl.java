@@ -18,13 +18,15 @@
 
 package io.undertow.server.handlers;
 
+import java.util.Arrays;
 import java.util.Date;
-import java.util.Locale;
 
+import io.undertow.UndertowLogger;
 import io.undertow.UndertowMessages;
 
 /**
  * @author Stuart Douglas
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public class CookieImpl implements Cookie {
 
@@ -41,7 +43,6 @@ public class CookieImpl implements Cookie {
     private String comment;
     private boolean sameSite;
     private String sameSiteMode;
-
 
     public CookieImpl(final String name, final String value) {
         this.name = name;
@@ -163,21 +164,48 @@ public class CookieImpl implements Cookie {
     }
 
     @Override
-    public Cookie setSameSiteMode(final String sameSiteMode) {
-        if (sameSiteMode != null) {
-            switch (sameSiteMode.toLowerCase(Locale.ENGLISH)) {
-                case "strict":
-                    this.setSameSite(true);
-                    this.sameSiteMode = "Strict";
-                    break;
-                case "lax":
-                    this.setSameSite(true);
-                    this.sameSiteMode = "Lax";
-                    break;
-                default:
-                    throw UndertowMessages.MESSAGES.invalidSameSiteMode(sameSiteMode);
-            }
+    public Cookie setSameSiteMode(final String mode) {
+        final String m = CookieSameSiteMode.lookupModeString(mode);
+        if (m != null) {
+            UndertowLogger.REQUEST_LOGGER.tracef("Setting SameSite mode to [%s] for cookie [%s]", m, this.name);
+            this.sameSiteMode = m;
+            this.setSameSite(true);
+        } else {
+            UndertowLogger.REQUEST_LOGGER.warnf(UndertowMessages.MESSAGES.invalidSameSiteMode(mode, Arrays.toString(CookieSameSiteMode.values())), "Ignoring specified SameSite mode [%s] for cookie [%s]", mode, this.name);
         }
         return this;
     }
+
+    @Override
+    public final int hashCode() {
+        int result = 17;
+        result = 37 * result + (getName() == null ? 0 : getName().hashCode());
+        result = 37 * result + (getPath() == null ? 0 : getPath().hashCode());
+        result = 37 * result + (getDomain() == null ? 0 : getDomain().hashCode());
+        return result;
+    }
+
+    @Override
+    public final boolean equals(final Object other) {
+        if (other == this) return true;
+        if (!(other instanceof CookieImpl)) return false;
+        final CookieImpl o = (CookieImpl) other;
+        // compare names
+        if (getName() == null && o.getName() != null) return false;
+        if (getName() != null && !getName().equals(o.getName())) return false;
+        // compare paths
+        if (getPath() == null && o.getPath() != null) return false;
+        if (getPath() != null && !getPath().equals(o.getPath())) return false;
+        // compare domains
+        if (getDomain() == null && o.getDomain() != null) return false;
+        if (getDomain() != null && !getDomain().equals(o.getDomain())) return false;
+        // same cookie
+        return true;
+    }
+
+    @Override
+    public final String toString() {
+        return "{CookieImpl@" + System.identityHashCode(this) + " name=" + getName() + " path=" + getPath() + " domain=" + getDomain() + "}";
+    }
+
 }

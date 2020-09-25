@@ -18,18 +18,16 @@
 
 package io.undertow.server.protocol.http;
 
-import io.undertow.UndertowMessages;
-import io.undertow.server.Connectors;
-import io.undertow.server.HttpServerExchange;
-import io.undertow.util.HeaderMap;
-import io.undertow.util.HeaderValues;
-import io.undertow.util.HttpString;
-import io.undertow.util.Protocols;
-import io.undertow.util.StatusCodes;
+import static org.xnio.Bits.allAreClear;
+import static org.xnio.Bits.allAreSet;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.FileChannel;
+
 import org.xnio.Buffers;
 import org.xnio.IoUtils;
-import io.undertow.connector.ByteBufferPool;
-import io.undertow.connector.PooledByteBuffer;
 import org.xnio.XnioWorker;
 import org.xnio.channels.StreamSourceChannel;
 import org.xnio.conduits.AbstractStreamSinkConduit;
@@ -37,13 +35,16 @@ import org.xnio.conduits.ConduitWritableByteChannel;
 import org.xnio.conduits.Conduits;
 import org.xnio.conduits.StreamSinkConduit;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.FileChannel;
-
-import static org.xnio.Bits.allAreClear;
-import static org.xnio.Bits.allAreSet;
+import io.undertow.UndertowMessages;
+import io.undertow.connector.ByteBufferPool;
+import io.undertow.connector.PooledByteBuffer;
+import io.undertow.server.Connectors;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.HeaderMap;
+import io.undertow.util.HeaderValues;
+import io.undertow.util.HttpString;
+import io.undertow.util.Protocols;
+import io.undertow.util.StatusCodes;
 
 /**
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
@@ -109,7 +110,7 @@ final class HttpResponseConduit extends AbstractStreamSinkConduit<StreamSinkCond
      * Handles writing out the header data. It can also take a byte buffer of user
      * data, to enable both user data and headers to be written out in a single operation,
      * which has a noticeable performance impact.
-     * <p/>
+     * <p>
      * It is up to the caller to note the current position of this buffer before and after they
      * call this method, and use this to figure out how many bytes (if any) have been written.
      *
@@ -146,7 +147,7 @@ final class HttpResponseConduit extends AbstractStreamSinkConduit<StreamSinkCond
                         }
                         data[0] = byteBuffer;
                         System.arraycopy(userData, pos, data, 1, length);
-                        res = next.write(data, 0, data.length);
+                        res = next.write(data, 0, length + 1);
                     }
                     if (res == 0) {
                         return STATE_BUF_FLUSH;
@@ -287,6 +288,13 @@ final class HttpResponseConduit extends AbstractStreamSinkConduit<StreamSinkCond
             pooledBuffer.close();
             pooledBuffer = null;
             this.exchange = null;
+        }
+    }
+
+    public void freeContinueResponse() {
+        if (pooledBuffer != null) {
+            pooledBuffer.close();
+            pooledBuffer = null;
         }
     }
 

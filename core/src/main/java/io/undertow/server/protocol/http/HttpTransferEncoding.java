@@ -34,6 +34,8 @@ import io.undertow.util.HeaderMap;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
 import io.undertow.util.Methods;
+import io.undertow.util.StatusCodes;
+
 import org.jboss.logging.Logger;
 import org.xnio.conduits.ConduitStreamSourceChannel;
 import org.xnio.conduits.StreamSinkConduit;
@@ -42,7 +44,7 @@ import org.xnio.conduits.StreamSourceConduit;
 /**
  * Class that is  responsible for HTTP transfer encoding, this could be part of the {@link HttpReadListener},
  * but is separated out for clarity.
- * <p/>
+ * <p>
  * For more info see http://tools.ietf.org/html/rfc2616#section-4.4
  *
  * @author Stuart Douglas
@@ -224,6 +226,11 @@ class HttpTransferEncoding {
         final HeaderMap responseHeaders = exchange.getResponseHeaders();
         // test to see if we're still persistent
         String connection = responseHeaders.getFirst(Headers.CONNECTION);
+        if(exchange.getStatusCode() == StatusCodes.EXPECTATION_FAILED) {
+            //417 responses are never persistent, as we have no idea if there is a response body
+            //still coming on the wire.
+            exchange.setPersistent(false);
+        }
         if (!exchange.isPersistent()) {
             responseHeaders.put(Headers.CONNECTION, Headers.CLOSE.toString());
         } else if (exchange.isPersistent() && connection != null) {

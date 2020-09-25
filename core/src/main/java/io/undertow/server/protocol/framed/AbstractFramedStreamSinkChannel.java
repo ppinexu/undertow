@@ -108,6 +108,8 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
     private volatile boolean writesResumed;
     @SuppressWarnings("unused")
     private volatile int inListenerLoop;
+    /* keep track of successful writes to properly prevent a loop UNDERTOW-1624 */
+    private volatile boolean writeSucceeded;
 
     private static final AtomicIntegerFieldUpdater<AbstractFramedStreamSinkChannel> inListenerLoopUpdater = AtomicIntegerFieldUpdater.newUpdater(AbstractFramedStreamSinkChannel.class, "inListenerLoop");
 
@@ -196,6 +198,8 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
         if (inListenerLoopUpdater.compareAndSet(this, 0, 1)) {
             getChannel().runInIoThread(new Runnable() {
 
+                // loopCount keeps track of runnable being invoked in a
+                // loop without any successful write operation
                 int loopCount = 0;
 
                 @Override
@@ -205,7 +209,11 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
                         if (listener == null || !isWriteResumed()) {
                             return;
                         }
-                        if (loopCount++ == 100) {
+                        if (writeSucceeded) {
+                            // reset write succeeded and loopCount
+                            writeSucceeded = false;
+                            loopCount = 0;
+                        } else if (loopCount++ == 100) {
                             //should never happen
                             UndertowLogger.ROOT_LOGGER.listenerNotProgressing();
                             IoUtils.safeClose(AbstractFramedStreamSinkChannel.this);
@@ -232,12 +240,12 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
 
     @Override
     public void shutdownWrites() throws IOException {
+        // Queue prior to shutting down writes, since we might send the write buffer
+        queueFinalFrame();
         synchronized (lock) {
             if (anyAreSet(state, STATE_WRITES_SHUTDOWN) || broken) {
                 return;
             }
-            // Queue prior to shutting down writes, since we might send the write buffer
-            queueFinalFrame();
             state |= STATE_WRITES_SHUTDOWN;
         }
     }
@@ -254,9 +262,9 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
                 state |= STATE_FIRST_DATA_WRITTEN;
                 state |= STATE_WRITES_SHUTDOWN; // Mark writes as shutdown as well, since we want that set prior to queueing
                 finalFrameQueued = true;
-                channel.queueFrame((S) this);
-            }
+            } else return;
         }
+        channel.queueFrame((S) this);
     }
 
     protected boolean isFinalFrameQueued() {
@@ -281,6 +289,7 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
                         lock.wait();
                     }
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     throw new InterruptedIOException();
                 } finally {
                     waiterCount--;
@@ -305,6 +314,7 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
                         lock.wait(timeUnit.toMillis(l));
                     }
                 } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                     throw new InterruptedIOException();
                 } finally {
                     waiterCount--;
@@ -387,6 +397,7 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
         if(!buffer.hasRemaining()) {
             handleBufferFull();
         }
+        writeSucceeded = writeSucceeded || copied > 0;
         return copied;
     }
 
@@ -408,6 +419,7 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
         if(!buffer.hasRemaining()) {
             handleBufferFull();
         }
+        writeSucceeded = writeSucceeded || copied > 0;
         return copied;
     }
 
@@ -433,6 +445,7 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
     protected boolean sendInternal(PooledByteBuffer pooled) throws IOException {
         if (safeToSend()) {
             this.body = pooled;
+            writeSucceeded = true;
             return true;
         }
         return false;
@@ -470,13 +483,12 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
     private void handleBufferFull() throws IOException {
         synchronized (lock) {
             bufferFull = true;
-            if (!readyForFlush) {
-                sendWriteBuffer();
-                readyForFlush = true;
-                state |= STATE_FIRST_DATA_WRITTEN;
-                channel.queueFrame((S) this);
-            }
+            if (readyForFlush) return;
+            sendWriteBuffer();
+            readyForFlush = true;
+            state |= STATE_FIRST_DATA_WRITTEN;
         }
+        channel.queueFrame((S) this);
     }
 
     private void sendWriteBuffer() throws IOException {
@@ -522,19 +534,23 @@ public abstract class AbstractFramedStreamSinkChannel<C extends AbstractFramedCh
         }
         try {
             synchronized (lock) {
+                // Double check to avoid executing the the rest of this method multiple times
+                if(fullyFlushed || anyAreSet(state, STATE_CLOSED)) {
+                    return;
+                }
                 state |= STATE_CLOSED;
-            }
-            if(writeBuffer != null) {
-                writeBuffer.close();
-                writeBuffer = null;
-            }
-            if(body != null) {
-                body.close();
-                body = null;
-            }
-            if (header != null && header.getByteBuffer() != null) {
-                header.getByteBuffer().close();
-                header = null;
+                if (writeBuffer != null) {
+                    writeBuffer.close();
+                    writeBuffer = null;
+                }
+                if (body != null) {
+                    body.close();
+                    body = null;
+                }
+                if (header != null && header.getByteBuffer() != null) {
+                    header.getByteBuffer().close();
+                    header = null;
+                }
             }
             channelForciblyClosed();
             //we need to wake up/invoke the write listener

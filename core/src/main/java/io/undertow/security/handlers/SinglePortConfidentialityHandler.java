@@ -19,6 +19,7 @@ package io.undertow.security.handlers;
 
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
+import io.undertow.util.NetworkUtils;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -43,10 +44,13 @@ public class SinglePortConfidentialityHandler extends AbstractConfidentialityHan
         return getRedirectURI(exchange, redirectPort);
     }
 
-    protected URI getRedirectURI(HttpServerExchange exchange, int port) throws URISyntaxException {
-        String host = exchange.getHostName();
-
-        String queryString = exchange.getQueryString();
+    protected URI getRedirectURI(final HttpServerExchange exchange, final int port) throws URISyntaxException {
+        final StringBuilder uriBuilder = new StringBuilder();
+        uriBuilder.append("https://");
+        uriBuilder.append(NetworkUtils.formatPossibleIpv6Address(exchange.getHostName()));
+        if (port > 0) {
+            uriBuilder.append(":").append(port);
+        }
         String uri = exchange.getRequestURI();
         if(exchange.isHostIncludedInRequestURI()) {
             int slashCount = 0;
@@ -60,8 +64,12 @@ public class SinglePortConfidentialityHandler extends AbstractConfidentialityHan
                 }
             }
         }
-        return new URI("https", null, host, port, uri,
-                queryString == null || queryString.length() == 0 ? null : queryString, null);
+        uriBuilder.append(uri);
+        final String queryString = exchange.getQueryString();
+        if (queryString != null && !queryString.isEmpty()) {
+            uriBuilder.append("?").append(queryString);
+        }
+        return new URI(uriBuilder.toString());
     }
 
 }

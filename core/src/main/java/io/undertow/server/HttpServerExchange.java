@@ -74,6 +74,7 @@ import java.nio.channels.FileChannel;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
@@ -88,6 +89,7 @@ import static org.xnio.Bits.intBitMask;
  * fully parsed.
  *
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public final class HttpServerExchange extends AbstractAttachable {
 
@@ -116,6 +118,12 @@ public final class HttpServerExchange extends AbstractAttachable {
     public static final AttachmentKey<Map<String, String>> REQUEST_ATTRIBUTES = AttachmentKey.create(Map.class);
 
     /**
+     * Attachment key that can be used to hold a remotely authenticated user
+     */
+    public static final AttachmentKey<String> REMOTE_USER = AttachmentKey.create(String.class);
+
+
+    /**
      * Attachment key that can be used as a flag of secure attribute
      */
     public static final AttachmentKey<Boolean> SECURE_REQUEST = AttachmentKey.create(Boolean.class);
@@ -131,8 +139,11 @@ public final class HttpServerExchange extends AbstractAttachable {
     private Map<String, Deque<String>> queryParameters;
     private Map<String, Deque<String>> pathParameters;
 
-    private Map<String, Cookie> requestCookies;
-    private Map<String, Cookie> responseCookies;
+    private DelegatingIterable<Cookie> requestCookies;
+    private DelegatingIterable<Cookie> responseCookies;
+
+    private Map<String, Cookie> deprecatedRequestCookies;
+    private Map<String, Cookie> deprecatedResponseCookies;
 
     /**
      * The actual response channel. May be null if it has not been created yet.
@@ -155,7 +166,7 @@ public final class HttpServerExchange extends AbstractAttachable {
     // mutable state
 
     private int state = 200;
-    private HttpString requestMethod;
+    private HttpString requestMethod = HttpString.EMPTY;
     private String requestScheme;
 
     /**
@@ -622,7 +633,7 @@ public final class HttpServerExchange extends AbstractAttachable {
      */
     public String getHostName() {
         String host = requestHeaders.getFirst(Headers.HOST);
-        if (host == null) {
+        if (host == null || "".equals(host.trim())) {
             host = getDestinationAddress().getHostString();
         } else {
             if (host.startsWith("[")) {
@@ -645,7 +656,7 @@ public final class HttpServerExchange extends AbstractAttachable {
      */
     public String getHostAndPort() {
         String host = requestHeaders.getFirst(Headers.HOST);
-        if (host == null) {
+        if (host == null || "".equals(host.trim())) {
             InetSocketAddress address = getDestinationAddress();
             host = NetworkUtils.formatPossibleIpv6Address(address.getHostString());
             int port = address.getPort();
@@ -1122,24 +1133,24 @@ public final class HttpServerExchange extends AbstractAttachable {
 
     /**
      * @return A mutable map of request cookies
+     * @deprecated use either {@link #requestCookies()} or {@link #getRequestCookie(String)} or {@link #setRequestCookie(Cookie)} methods instead
      */
+    @Deprecated
     public Map<String, Cookie> getRequestCookies() {
-        if (requestCookies == null) {
-            requestCookies = Cookies.parseRequestCookies(
-                    getConnection().getUndertowOptions().get(UndertowOptions.MAX_COOKIES, 200),
-                    getConnection().getUndertowOptions().get(UndertowOptions.ALLOW_EQUALS_IN_COOKIE_VALUE, false),
-                    requestHeaders.get(Headers.COOKIE));
+        if (deprecatedRequestCookies == null) {
+            deprecatedRequestCookies = new MapDelegatingToSet((Set<Cookie>)((DelegatingIterable<Cookie>)requestCookies()).getDelegate());
         }
-        return requestCookies;
+        return deprecatedRequestCookies;
     }
 
     /**
-     * Sets a response cookie
+     * Sets a request cookie
      *
      * @param cookie The cookie
      */
-    public HttpServerExchange setResponseCookie(final Cookie cookie) {
-        if(getConnection().getUndertowOptions().get(UndertowOptions.ENABLE_RFC6265_COOKIE_VALIDATION, UndertowOptions.DEFAULT_ENABLE_RFC6265_COOKIE_VALIDATION)) {
+    public HttpServerExchange setRequestCookie(final Cookie cookie) {
+        if (cookie == null) return this;
+        if (getConnection().getUndertowOptions().get(UndertowOptions.ENABLE_RFC6265_COOKIE_VALIDATION, UndertowOptions.DEFAULT_ENABLE_RFC6265_COOKIE_VALIDATION)) {
             if (cookie.getValue() != null && !cookie.getValue().isEmpty()) {
                 Rfc6265CookieSupport.validateCookieValue(cookie.getValue());
             }
@@ -1150,29 +1161,81 @@ public final class HttpServerExchange extends AbstractAttachable {
                 Rfc6265CookieSupport.validateDomain(cookie.getDomain());
             }
         }
-        if (responseCookies == null) {
-            responseCookies = new TreeMap<>(); //hashmap is slow to allocate in JDK7
+        ((Set<Cookie>)((DelegatingIterable<Cookie>)requestCookies()).getDelegate()).add(cookie);
+        return this;
+    }
+
+    public Cookie getRequestCookie(final String name) {
+        if (name == null) return null;
+        for (Cookie cookie : requestCookies()) {
+            if (name.equals(cookie.getName())) {
+                // TODO: QUESTION: Shouldn't we check instead of just name also
+                // TODO  requestPath (stored in this exchange request path) and
+                // TODO: domain (stored in Host HTTP header).
+                return cookie;
+            }
         }
-        responseCookies.put(cookie.getName(), cookie);
+        return null;
+    }
+
+    /**
+     * Returns unmodifiable enumeration of request cookies.
+     * @return A read-only enumeration of request cookies
+     */
+    public Iterable<Cookie> requestCookies() {
+        if (requestCookies == null) {
+            Set<Cookie> requestCookiesParam = new OverridableHashSet<>();
+            requestCookies = new DelegatingIterable<>(requestCookiesParam);
+            Cookies.parseRequestCookies(
+                    getConnection().getUndertowOptions().get(UndertowOptions.MAX_COOKIES, 200),
+                    getConnection().getUndertowOptions().get(UndertowOptions.ALLOW_EQUALS_IN_COOKIE_VALUE, false),
+                    requestHeaders.get(Headers.COOKIE), requestCookiesParam);
+        }
+        return requestCookies;
+    }
+
+    /**
+     * Sets a response cookie
+     *
+     * @param cookie The cookie
+     */
+    public HttpServerExchange setResponseCookie(final Cookie cookie) {
+        if (cookie == null) return this;
+        if (getConnection().getUndertowOptions().get(UndertowOptions.ENABLE_RFC6265_COOKIE_VALIDATION, UndertowOptions.DEFAULT_ENABLE_RFC6265_COOKIE_VALIDATION)) {
+            if (cookie.getValue() != null && !cookie.getValue().isEmpty()) {
+                Rfc6265CookieSupport.validateCookieValue(cookie.getValue());
+            }
+            if (cookie.getPath() != null && !cookie.getPath().isEmpty()) {
+                Rfc6265CookieSupport.validatePath(cookie.getPath());
+            }
+            if (cookie.getDomain() != null && !cookie.getDomain().isEmpty()) {
+                Rfc6265CookieSupport.validateDomain(cookie.getDomain());
+            }
+        }
+        ((Set<Cookie>)((DelegatingIterable<Cookie>)responseCookies()).getDelegate()).add(cookie);
         return this;
     }
 
     /**
      * @return A mutable map of response cookies
+     * @deprecated use either {@link #responseCookies()} or {@link #setResponseCookie(Cookie)} methods instead
      */
+    @Deprecated
     public Map<String, Cookie> getResponseCookies() {
-        if (responseCookies == null) {
-            responseCookies = new TreeMap<>();
+        if (deprecatedResponseCookies == null) {
+            deprecatedResponseCookies = new MapDelegatingToSet((Set<Cookie>)((DelegatingIterable<Cookie>)responseCookies()).getDelegate());
         }
-        return responseCookies;
+        return deprecatedResponseCookies;
     }
 
     /**
-     * For internal use only
-     *
-     * @return The response cookies, or null if they have not been set yet
+     * Returns unmodifiable enumeration of response cookies.
+     * @return A read-only enumeration of response cookies
      */
-    Map<String, Cookie> getResponseCookiesInternal() {
+    public Iterable<Cookie> responseCookies() {
+        if (responseCookies == null) {
+            responseCookies = new DelegatingIterable<>(new OverridableHashSet<>());
+        }
         return responseCookies;
     }
 
@@ -1566,8 +1629,10 @@ public final class HttpServerExchange extends AbstractAttachable {
     }
 
     /**
-     *
-     * @return The request start time, or -1 if this was not recorded
+     * @return The request start time using the JVM's high-resolution time source,
+     * in nanoseconds, or -1 if this was not recorded
+     * @see UndertowOptions#RECORD_REQUEST_START_TIME
+     * @see Connectors#setRequestStartTime(HttpServerExchange)
      */
     public long getRequestStartTime() {
         return requestStartTime;
@@ -1666,7 +1731,8 @@ public final class HttpServerExchange extends AbstractAttachable {
 
                                             //make sure the listeners have been invoked
                                             //unless the connection has been killed this is a no-op
-                                            invokeExchangeCompleteListeners();
+                                            terminateRequest();
+                                            terminateResponse();
                                             UndertowLogger.REQUEST_LOGGER.debug("Exception draining request stream", e);
                                             IoUtils.safeClose(connection);
                                         }
@@ -1704,7 +1770,8 @@ public final class HttpServerExchange extends AbstractAttachable {
             //not much point trying to flush
 
             //make sure the listeners have been invoked
-            invokeExchangeCompleteListeners();
+            terminateRequest();
+            terminateResponse();
             return;
         }
         try {
@@ -1714,6 +1781,13 @@ public final class HttpServerExchange extends AbstractAttachable {
                     getResponseHeaders().put(Headers.CONTENT_LENGTH, "0");
                 }
                 getResponseChannel();
+            } else if (anyAreClear(state, FLAG_RESPONSE_TERMINATED) && !responseChannel.isOpen()) {
+                // UNDERTOW-1664: Http/2 response channels may be closed prior to the connection. There's
+                // no reason to attempt to flush a response for a closed channel but we must ensure
+                // the listeners have been invoked.
+                invokeExchangeCompleteListeners();
+                IoUtils.safeClose(connection);
+                return;
             }
             responseChannel.shutdownWrites();
             if (!responseChannel.flush()) {
@@ -1725,6 +1799,8 @@ public final class HttpServerExchange extends AbstractAttachable {
                                 channel.getWriteSetter().set(null);
                                 //defensive programming, should never happen
                                 if (anyAreClear(state, FLAG_RESPONSE_TERMINATED)) {
+                                    //make sure the listeners have been invoked
+                                    invokeExchangeCompleteListeners();
                                     UndertowLogger.ROOT_LOGGER.responseWasNotTerminated(connection, HttpServerExchange.this);
                                     IoUtils.safeClose(connection);
                                 }
@@ -1743,6 +1819,8 @@ public final class HttpServerExchange extends AbstractAttachable {
             } else {
                 //defensive programming, should never happen
                 if (anyAreClear(state, FLAG_RESPONSE_TERMINATED)) {
+                    //make sure the listeners have been invoked
+                    invokeExchangeCompleteListeners();
                     UndertowLogger.ROOT_LOGGER.responseWasNotTerminated(connection, this);
                     IoUtils.safeClose(connection);
                 }
@@ -1762,18 +1840,18 @@ public final class HttpServerExchange extends AbstractAttachable {
     /**
      * Transmit the response headers. After this method successfully returns,
      * the response channel may become writable.
-     * <p/>
+     * <p>
      * If this method fails the request and response channels will be closed.
-     * <p/>
+     * <p>
      * This method runs asynchronously. If the channel is writable it will
      * attempt to write as much of the response header as possible, and then
      * queue the rest in a listener and return.
-     * <p/>
+     * <p>
      * If future handlers in the chain attempt to write before this is finished
      * XNIO will just magically sort it out so it works. This is not actually
      * implemented yet, so we just terminate the connection straight away at
      * the moment.
-     * <p/>
+     * <p>
      * TODO: make this work properly
      *
      * @throws IllegalStateException if the response headers were already sent
@@ -1939,10 +2017,10 @@ public final class HttpServerExchange extends AbstractAttachable {
 
     /**
      * Channel implementation that is actually provided to clients of the exchange.
-     * <p/>
+     * <p>
      * We do not provide the underlying conduit channel, as this is shared between requests, so we need to make sure that after this request
      * is done the the channel cannot affect the next request.
-     * <p/>
+     * <p>
      * It also delays a wakeup/resumesWrites calls until the current call stack has returned, thus ensuring that only 1 thread is
      * active in the exchange at any one time.
      */
@@ -2110,10 +2188,10 @@ public final class HttpServerExchange extends AbstractAttachable {
      * Channel implementation that is actually provided to clients of the exchange. We do not provide the underlying
      * conduit channel, as this will become the next requests conduit channel, so if a thread is still hanging onto this
      * exchange it can result in problems.
-     * <p/>
+     * <p>
      * It also delays a readResume call until the current call stack has returned, thus ensuring that only 1 thread is
      * active in the exchange at any one time.
-     * <p/>
+     * <p>
      * It also handles buffered request data.
      */
     private final class ReadDispatchChannel extends DetachableStreamSourceChannel implements StreamSourceChannel {
@@ -2441,6 +2519,6 @@ public final class HttpServerExchange extends AbstractAttachable {
 
     @Override
     public String toString() {
-        return "HttpServerExchange{ " + getRequestMethod().toString() + " " + getRequestURI() + " request " + requestHeaders + " response " + responseHeaders + '}';
+        return "HttpServerExchange{ " + getRequestMethod().toString() + " " + getRequestURI() + '}';
     }
 }

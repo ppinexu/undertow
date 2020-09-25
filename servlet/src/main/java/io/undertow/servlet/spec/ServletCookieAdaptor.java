@@ -18,19 +18,27 @@
 
 package io.undertow.servlet.spec;
 
+import java.util.Arrays;
 import java.util.Date;
 
+import io.undertow.UndertowMessages;
 import io.undertow.server.handlers.Cookie;
+import io.undertow.server.handlers.CookieSameSiteMode;
+import io.undertow.servlet.UndertowServletLogger;
 import io.undertow.servlet.UndertowServletMessages;
 
 /**
  * Adaptor between and undertow and a servlet cookie
  *
  * @author Stuart Douglas
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public class ServletCookieAdaptor implements Cookie {
 
     private final javax.servlet.http.Cookie cookie;
+
+    private boolean sameSite;
+    private String sameSiteMode;
 
     public ServletCookieAdaptor(final javax.servlet.http.Cookie cookie) {
         this.cookie = cookie;
@@ -148,4 +156,66 @@ public class ServletCookieAdaptor implements Cookie {
         cookie.setComment(comment);
         return this;
     }
+
+    @Override
+    public boolean isSameSite() {
+        return sameSite;
+    }
+
+    @Override
+    public Cookie setSameSite(final boolean sameSite) {
+        this.sameSite = sameSite;
+        return this;
+    }
+
+    @Override
+    public String getSameSiteMode() {
+        return sameSiteMode;
+    }
+
+    @Override
+    public Cookie setSameSiteMode(final String mode) {
+        final String m = CookieSameSiteMode.lookupModeString(mode);
+        if (m != null) {
+            UndertowServletLogger.REQUEST_LOGGER.tracef("Setting SameSite mode to [%s] for cookie [%s]", m, this.getName());
+            this.sameSiteMode = m;
+            this.setSameSite(true);
+        } else {
+            UndertowServletLogger.REQUEST_LOGGER.warnf(UndertowMessages.MESSAGES.invalidSameSiteMode(mode, Arrays.toString(CookieSameSiteMode.values())), "Ignoring specified SameSite mode [%s] for cookie [%s]", mode, this.getName());
+        }
+        return this;
+    }
+
+    @Override
+    public final int hashCode() {
+        int result = 17;
+        result = 37 * result + (getName() == null ? 0 : getName().hashCode());
+        result = 37 * result + (getPath() == null ? 0 : getPath().hashCode());
+        result = 37 * result + (getDomain() == null ? 0 : getDomain().hashCode());
+        return result;
+    }
+
+    @Override
+    public final boolean equals(final Object other) {
+        if (other == this) return true;
+        if (!(other instanceof ServletCookieAdaptor)) return false;
+        final ServletCookieAdaptor o = (ServletCookieAdaptor) other;
+        // compare names
+        if (getName() == null && o.getName() != null) return false;
+        if (getName() != null && !getName().equals(o.getName())) return false;
+        // compare paths
+        if (getPath() == null && o.getPath() != null) return false;
+        if (getPath() != null && !getPath().equals(o.getPath())) return false;
+        // compare domains
+        if (getDomain() == null && o.getDomain() != null) return false;
+        if (getDomain() != null && !getDomain().equals(o.getDomain())) return false;
+        // same cookie
+        return true;
+    }
+
+    @Override
+    public final String toString() {
+        return "{ServletCookieAdaptor@" + System.identityHashCode(this) + " name=" + getName() + " path=" + getPath() + " domain=" + getDomain() + "}";
+    }
+
 }

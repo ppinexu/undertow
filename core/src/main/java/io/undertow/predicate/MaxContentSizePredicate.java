@@ -29,8 +29,11 @@ import io.undertow.util.Headers;
  * Predicate that returns true if the Content-Size of a request is above a
  * given value.
  *
+ * Use {@link RequestLargerThanPredicate} instead.
+ *
  * @author Stuart Douglas
  */
+@Deprecated
 public class MaxContentSizePredicate implements Predicate {
 
     private final long maxSize;
@@ -46,6 +49,11 @@ public class MaxContentSizePredicate implements Predicate {
             return false;
         }
         return Long.parseLong(length) > maxSize;
+    }
+
+    @Override
+    public String toString() {
+        return "max-content-size( " + maxSize + " )";
     }
 
     public static class Builder implements PredicateBuilder {

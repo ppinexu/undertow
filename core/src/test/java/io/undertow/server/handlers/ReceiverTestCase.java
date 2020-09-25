@@ -174,6 +174,7 @@ public class ReceiverTestCase {
 
     @Test
     public void testAsyncReceiveWholeBytesFailed() throws Exception {
+
         EXCEPTIONS.clear();
         Socket socket = new Socket();
         socket.connect(DefaultServer.getDefaultServerAddress());

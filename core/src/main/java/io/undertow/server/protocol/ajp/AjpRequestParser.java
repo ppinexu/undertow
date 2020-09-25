@@ -49,7 +49,12 @@ import static io.undertow.util.Methods.VERSION_CONTROL;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import io.undertow.UndertowLogger;
 import io.undertow.UndertowMessages;
@@ -67,7 +72,6 @@ import io.undertow.util.URLUtils;
  */
 public class AjpRequestParser {
 
-
     private final String encoding;
     private final boolean doDecode;
     private final boolean allowEncodedSlash;
@@ -75,6 +79,7 @@ public class AjpRequestParser {
     private final int maxHeaders;
     private StringBuilder decodeBuffer;
     private final boolean allowUnescapedCharactersInUrl;
+    private final Pattern allowedRequestAttributesPattern;
 
     private static final HttpString[] HTTP_HEADERS;
 
@@ -86,6 +91,7 @@ public class AjpRequestParser {
 
     private static final HttpString[] HTTP_METHODS;
     private static final String[] ATTRIBUTES;
+    private static final Set<String> ATTR_SET;
 
     public static final String QUERY_STRING = "query_string";
 
@@ -175,15 +181,25 @@ public class AjpRequestParser {
         ATTRIBUTES[11] = SSL_KEY_SIZE;
         ATTRIBUTES[12] = SECRET;
         ATTRIBUTES[13] = STORED_METHOD;
+        ATTR_SET = new HashSet<String>(Arrays.asList(ATTRIBUTES));
     }
 
     public AjpRequestParser(String encoding, boolean doDecode, int maxParameters, int maxHeaders, boolean allowEncodedSlash, boolean allowUnescapedCharactersInUrl) {
+        this(encoding, doDecode, maxParameters, maxHeaders, allowEncodedSlash, allowUnescapedCharactersInUrl, null);
+    }
+
+    public AjpRequestParser(String encoding, boolean doDecode, int maxParameters, int maxHeaders, boolean allowEncodedSlash, boolean allowUnescapedCharactersInUrl, String allowedRequestAttributesPattern) {
         this.encoding = encoding;
         this.doDecode = doDecode;
         this.maxParameters = maxParameters;
         this.maxHeaders = maxHeaders;
         this.allowEncodedSlash = allowEncodedSlash;
         this.allowUnescapedCharactersInUrl = allowUnescapedCharactersInUrl;
+        if (allowedRequestAttributesPattern != null && !allowedRequestAttributesPattern.isEmpty()) {
+            this.allowedRequestAttributesPattern = Pattern.compile(allowedRequestAttributesPattern);
+        } else {
+            this.allowedRequestAttributesPattern = null;
+        }
     }
 
 
@@ -263,8 +279,24 @@ public class AjpRequestParser {
                         exchange.setRequestPath(res);
                         exchange.setRelativePath(res);
                     } else {
-                        final String url = result.value.substring(0, colon);
-                        String res = decode(url, result.containsUrlCharacters);
+                        final StringBuffer resBuffer = new StringBuffer();
+                        int pathParamParsingIndex = 0;
+                        try {
+                            do {
+                                final String url = result.value.substring(pathParamParsingIndex, colon);
+                                resBuffer.append(decode(url, result.containsUrlCharacters));
+                                pathParamParsingIndex = colon + 1 + URLUtils.parsePathParams(result.value.substring(colon + 1), exchange, encoding, doDecode && result.containsUrlCharacters, maxParameters);
+                                colon = result.value.indexOf(';', pathParamParsingIndex + 1);
+                            } while (pathParamParsingIndex < result.value.length() && colon != -1);
+                        } catch (ParameterLimitException e) {
+                            UndertowLogger.REQUEST_IO_LOGGER.failedToParseRequest(e);
+                            state.badRequest = true;
+                        }
+                        if (pathParamParsingIndex < result.value.length()) {
+                            final String url = result.value.substring(pathParamParsingIndex);
+                            resBuffer.append(decode(url, result.containsUrlCharacters));
+                        }
+                        final String res = resBuffer.toString();
                         if(result.containsUnencodedCharacters) {
                             exchange.setRequestURI(res);
                         } else {
@@ -272,12 +304,6 @@ public class AjpRequestParser {
                         }
                         exchange.setRequestPath(res);
                         exchange.setRelativePath(res);
-                        try {
-                            URLUtils.parsePathParams(result.value.substring(colon + 1), exchange, encoding, doDecode && result.containsUrlCharacters, maxParameters);
-                        } catch (ParameterLimitException e) {
-                            UndertowLogger.REQUEST_IO_LOGGER.failedToParseRequest(e);
-                            state.badRequest = true;
-                        }
                     }
                 } else {
                     state.state = AjpRequestParseState.READING_REQUEST_URI;
@@ -442,6 +468,7 @@ public class AjpRequestParser {
                         }
                     } else if (state.currentAttribute.equals(REMOTE_USER)) {
                         exchange.putAttachment(ExternalAuthenticationMechanism.EXTERNAL_PRINCIPAL, result);
+                        exchange.putAttachment(HttpServerExchange.REMOTE_USER, result);
                     } else if (state.currentAttribute.equals(AUTH_TYPE)) {
                         exchange.putAttachment(ExternalAuthenticationMechanism.EXTERNAL_AUTHENTICATION_TYPE, result);
                     } else if (state.currentAttribute.equals(STORED_METHOD)) {
@@ -458,12 +485,21 @@ public class AjpRequestParser {
                         state.sslCert = result;
                     } else if (state.currentAttribute.equals(SSL_KEY_SIZE)) {
                         state.sslKeySize = result;
-                    }  else {
-                        //other attributes
-                        if(state.attributes == null) {
+                    } else {
+                        // other attributes
+                        if (state.attributes == null) {
                             state.attributes = new TreeMap<>();
                         }
-                        state.attributes.put(state.currentAttribute, result);
+                        if (ATTR_SET.contains(state.currentAttribute)) {
+                            // known attirubtes
+                            state.attributes.put(state.currentAttribute, result);
+                        } else if (allowedRequestAttributesPattern != null) {
+                            // custom allowed attributes
+                            Matcher m = allowedRequestAttributesPattern.matcher(state.currentAttribute);
+                            if (m.matches()) {
+                                state.attributes.put(state.currentAttribute, result);
+                            }
+                        }
                     }
                     state.currentAttribute = null;
                 }

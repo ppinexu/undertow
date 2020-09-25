@@ -18,11 +18,14 @@
 
 package io.undertow.servlet.test.security.form;
 
+import io.undertow.servlet.api.AuthMethodConfig;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 
+import java.util.Map;
 import javax.servlet.ServletException;
 
 import io.undertow.security.api.AuthenticationMode;
@@ -66,6 +69,7 @@ import static org.junit.Assert.assertEquals;
 public class ServletFormAuthTestCase {
 
     public static final String HELLO_WORLD = "Hello World";
+    private static final String DEFAULT_PAGE = "/main.html";
 
     @BeforeClass
     public static void setup() throws ServletException {
@@ -98,6 +102,12 @@ public class ServletFormAuthTestCase {
         ServletIdentityManager identityManager = new ServletIdentityManager();
         identityManager.addUser("user1", "password1", "role1");
 
+        Map<String, String> props = new HashMap<>();
+        props.put("default_page", DEFAULT_PAGE);
+        AuthMethodConfig authMethodConfig = new AuthMethodConfig("FORM", props);
+
+        LoginConfig loginConfig = new LoginConfig("Test Realm", "/FormLoginServlet", "/error.html").addFirstAuthMethod(authMethodConfig);
+
         DeploymentInfo builder = new DeploymentInfo()
                 .setClassLoader(SimpleServletTestCase.class.getClassLoader())
                 .setContextPath("/servletContext")
@@ -105,7 +115,7 @@ public class ServletFormAuthTestCase {
                 .setDeploymentName("servletContext.war")
                 .setAuthenticationMode(AuthenticationMode.CONSTRAINT_DRIVEN)
                 .setIdentityManager(identityManager)
-                .setLoginConfig(new LoginConfig("FORM", "Test Realm", "/FormLoginServlet", "/error.html"))
+                .setLoginConfig(loginConfig)
                 .addServlets(s, s1, echo,echoParam);
 
         DeploymentManager manager = container.addDeployment(builder);
@@ -190,6 +200,42 @@ public class ServletFormAuthTestCase {
         }
     }
 
+    @Test
+    public void testServletFormAuthWithoutSavedPostBody() throws IOException {
+        TestHttpClient client = new TestHttpClient();
+        client.setRedirectStrategy(new DefaultRedirectStrategy() {
+            @Override
+            public boolean isRedirected(final HttpRequest request, final HttpResponse response, final HttpContext context) throws ProtocolException {
+                if (response.getStatusLine().getStatusCode() == StatusCodes.FOUND) {
+                    return true;
+                }
+                if (request.getRequestLine().getUri().equals(DEFAULT_PAGE)) {
+                    response.setStatusCode(StatusCodes.OK);
+                    // Skip redirecting, because the resource isn't available in this test
+                    return false;
+                }
+                // force the test to fail
+                response.setStatusCode(StatusCodes.EXPECTATION_FAILED);
+                return super.isRedirected(request, response, context);
+            }
+        });
+        try {
+            BasicNameValuePair[] pairs = new BasicNameValuePair[]{new BasicNameValuePair("j_username", "user1"), new BasicNameValuePair("j_password", "password1")};
+            final List<NameValuePair> data = new ArrayList<>();
+            data.addAll(Arrays.asList(pairs));
+            HttpPost post = new HttpPost(DefaultServer.getDefaultServerURL() + "/servletContext/j_security_check");
+
+            post.setEntity(new UrlEncodedFormEntity(data));
+
+            HttpResponse result = client.execute(post);
+            assertEquals(StatusCodes.OK, result.getStatusLine().getStatusCode());
+
+            String response = HttpClientUtils.readResponse(result);
+            Assert.assertEquals("", response);
+        } finally {
+            client.getConnectionManager().shutdown();
+        }
+    }
 
     @Test
     public void testServletFormAuthWithOriginalRequestParams() throws IOException {

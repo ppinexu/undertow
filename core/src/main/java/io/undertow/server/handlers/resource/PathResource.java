@@ -57,6 +57,9 @@ public class PathResource implements RangeAwareResource {
     @Override
     public Date getLastModified() {
         try {
+            if (Files.isSymbolicLink(file) && Files.notExists(file)) {
+                return null;
+            }
             return new Date(Files.getLastModifiedTime(file).toMillis());
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -88,7 +91,7 @@ public class PathResource implements RangeAwareResource {
         final List<Resource> resources = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(file)) {
             for (Path child : stream) {
-                resources.add(new PathResource(child, manager, path + File.separator + child.getFileName().toString()));
+                resources.add(new PathResource(child, manager, path + file.getFileSystem().getSeparator() + child.getFileName().toString()));
             }
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -150,8 +153,10 @@ public class PathResource implements RangeAwareResource {
             public void run() {
                 if(range && remaining == 0) {
                     //we are done
-                    pooled.close();
-                    pooled = null;
+                    if (pooled != null) {
+                        pooled.close();
+                        pooled = null;
+                    }
                     IoUtils.safeClose(fileChannel);
                     callback.onComplete(exchange, sender);
                     return;
@@ -257,6 +262,9 @@ public class PathResource implements RangeAwareResource {
     @Override
     public Long getContentLength() {
         try {
+            if (Files.isSymbolicLink(file) && Files.notExists(file)) {
+                return null;
+            }
             return Files.size(file);
         } catch (IOException e) {
             throw new RuntimeException(e);

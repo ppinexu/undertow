@@ -71,6 +71,8 @@ import io.undertow.servlet.api.SessionPersistenceManager;
 import io.undertow.servlet.api.ThreadSetupHandler;
 import io.undertow.servlet.api.WebResourceCollection;
 import io.undertow.servlet.handlers.CrawlerSessionManagerHandler;
+import io.undertow.servlet.handlers.RedirectDirHandler;
+import io.undertow.servlet.handlers.SendErrorPageHandler;
 import io.undertow.servlet.handlers.ServletDispatchingHandler;
 import io.undertow.servlet.handlers.ServletHandler;
 import io.undertow.servlet.handlers.ServletInitialHandler;
@@ -186,7 +188,6 @@ public class DeploymentManagerImpl implements DeploymentManager {
                 @Override
                 public Void call(HttpServerExchange exchange, Object ignore) throws Exception {
                     final ApplicationListeners listeners = createListeners();
-                    listeners.start();
 
                     deployment.setApplicationListeners(listeners);
 
@@ -206,6 +207,8 @@ public class DeploymentManagerImpl implements DeploymentManager {
                         }
                     }
 
+                    listeners.start();
+
                     deployment.getSessionManager().registerSessionListener(new SessionListenerBridge(deployment, listeners, servletContext));
                     for(SessionListener listener : deploymentInfo.getSessionListeners()) {
                         deployment.getSessionManager().registerSessionListener(listener);
@@ -218,11 +221,13 @@ public class DeploymentManagerImpl implements DeploymentManager {
 
                     HttpHandler wrappedHandlers = ServletDispatchingHandler.INSTANCE;
                     wrappedHandlers = wrapHandlers(wrappedHandlers, deploymentInfo.getInnerHandlerChainWrappers());
+                    wrappedHandlers = new RedirectDirHandler(wrappedHandlers, deployment.getServletPaths());
                     if(!deploymentInfo.isSecurityDisabled()) {
                         HttpHandler securityHandler = setupSecurityHandlers(wrappedHandlers);
                         wrappedHandlers = new PredicateHandler(DispatcherTypePredicate.REQUEST, securityHandler, wrappedHandlers);
                     }
                     HttpHandler outerHandlers = wrapHandlers(wrappedHandlers, deploymentInfo.getOuterHandlerChainWrappers());
+                    outerHandlers = new SendErrorPageHandler(outerHandlers);
                     wrappedHandlers = new PredicateHandler(DispatcherTypePredicate.REQUEST, outerHandlers, wrappedHandlers);
                     wrappedHandlers = handleDevelopmentModePersistentSessions(wrappedHandlers, deploymentInfo, deployment.getSessionManager(), servletContext);
 
@@ -270,10 +275,10 @@ public class DeploymentManagerImpl implements DeploymentManager {
     }
 
     private void handleExtensions(final DeploymentInfo deploymentInfo, final ServletContextImpl servletContext) {
-        Set<Class<?>> loadedExtensions = new HashSet<>();
+        Set<String> loadedExtensions = new HashSet<>();
 
         for (ServletExtension extension : ServiceLoader.load(ServletExtension.class, deploymentInfo.getClassLoader())) {
-            loadedExtensions.add(extension.getClass());
+            loadedExtensions.add(extension.getClass().getName());
             extension.handleDeployment(deploymentInfo, servletContext);
         }
 
@@ -283,14 +288,14 @@ public class DeploymentManagerImpl implements DeploymentManager {
                 // Note: If the CLs are different, but can the see the same extensions and extension might get loaded
                 // and thus instantiated twice, but the handleDeployment() is executed only once.
 
-                if (!loadedExtensions.contains(extension.getClass())) {
+                if (!loadedExtensions.contains(extension.getClass().getName())) {
                     extension.handleDeployment(deploymentInfo, servletContext);
                 }
             }
         }
 
         for (ServletExtension extension : ServletExtensionHolder.getServletExtensions()) {
-            if (!loadedExtensions.contains(extension.getClass())) {
+            if (!loadedExtensions.contains(extension.getClass().getName())) {
                 extension.handleDeployment(deploymentInfo, servletContext);
             }
         }
@@ -302,7 +307,7 @@ public class DeploymentManagerImpl implements DeploymentManager {
 
     /**
      * sets up the outer security handlers.
-     * <p/>
+     * <p>
      * the handler that actually performs the access check happens later in the chain, it is not setup here
      *
      * @param initialHandler The handler to wrap with security handlers
@@ -368,7 +373,7 @@ public class DeploymentManagerImpl implements DeploymentManager {
                 FormEncodedDataDefinition formEncodedDataDefinition = new FormEncodedDataDefinition();
                 String reqEncoding = deploymentInfo.getDefaultRequestEncoding();
                 if(reqEncoding == null) {
-                    deploymentInfo.getDefaultEncoding();
+                    reqEncoding = deploymentInfo.getDefaultEncoding();
                 }
                 if (reqEncoding != null) {
                     formEncodedDataDefinition.setDefaultEncoding(reqEncoding);

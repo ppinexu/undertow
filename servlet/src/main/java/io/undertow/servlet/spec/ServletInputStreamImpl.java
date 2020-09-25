@@ -67,6 +67,7 @@ public class ServletInputStreamImpl extends ServletInputStream {
     private volatile int state;
     private volatile AsyncContextImpl asyncContext;
     private volatile PooledByteBuffer pooled;
+    private volatile boolean asyncIoStarted;
 
     private static final AtomicIntegerFieldUpdater<ServletInputStreamImpl> stateUpdater = AtomicIntegerFieldUpdater.newUpdater(ServletInputStreamImpl.class, "state");
 
@@ -88,6 +89,9 @@ public class ServletInputStreamImpl extends ServletInputStream {
 
     @Override
     public boolean isReady() {
+        if (!asyncContext.isInitialRequestDone()) {
+            return false;
+        }
         boolean finished = anyAreSet(state, FLAG_FINISHED);
         if(finished) {
             if (anyAreClear(state, FLAG_ON_DATA_READ_CALLED)) {
@@ -98,6 +102,10 @@ public class ServletInputStreamImpl extends ServletInputStream {
                     setFlags(FLAG_CALL_ON_ALL_DATA_READ);
                 }
             }
+        }
+        if (!asyncIoStarted) {
+            //make sure we don't call resumeReads unless we have started async IO
+            return false;
         }
         boolean ready = anyAreSet(state, FLAG_READY) && !finished;
         if(!ready && listener != null && !finished) {
@@ -132,6 +140,7 @@ public class ServletInputStreamImpl extends ServletInputStream {
                 channel.getIoThread().execute(new Runnable() {
                     @Override
                     public void run() {
+                        asyncIoStarted = true;
                         internalListener.handleEvent(channel);
                     }
                 });

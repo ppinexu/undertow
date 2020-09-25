@@ -27,6 +27,7 @@ import io.undertow.server.handlers.resource.PreCompressedResourceSupplier;
 import io.undertow.server.handlers.resource.RangeAwareResource;
 import io.undertow.server.handlers.resource.Resource;
 import io.undertow.server.handlers.resource.ResourceSupplier;
+import io.undertow.servlet.UndertowServletLogger;
 import io.undertow.servlet.api.DefaultServletConfig;
 import io.undertow.servlet.api.Deployment;
 import io.undertow.servlet.spec.ServletContextImpl;
@@ -168,6 +169,7 @@ public class DefaultServlet extends HttpServlet {
         if (resource == null) {
             if (req.getDispatcherType() == DispatcherType.INCLUDE) {
                 //servlet 9.3
+                UndertowServletLogger.REQUEST_LOGGER.requestedResourceDoesNotExistForIncludeMethod(path);
                 throw new FileNotFoundException(path);
             } else {
                 resp.sendError(StatusCodes.NOT_FOUND);
@@ -184,6 +186,7 @@ public class DefaultServlet extends HttpServlet {
                 return;
             }
             if (directoryListingEnabled) {
+                resp.setContentType("text/html");
                 StringBuilder output = DirectoryUtils.renderDirectoryListing(req.getRequestURI(), resource);
                 resp.getWriter().write(output.toString());
             } else {

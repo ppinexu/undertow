@@ -33,6 +33,8 @@ import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -176,6 +178,10 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
     }
 
     private static SSLContext createSSLContext(final KeyStore keyStore, final KeyStore trustStore, boolean client) throws IOException {
+        return createSSLContext(keyStore, trustStore, "TLSv1.2", client);
+    }
+
+    private static SSLContext createSSLContext(final KeyStore keyStore, final KeyStore trustStore, String protocol, boolean client) throws IOException {
         KeyManager[] keyManagers;
         try {
             KeyManagerFactory keyManagerFactory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
@@ -199,7 +205,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
             if (openssl && !client) {
                 sslContext = SSLContext.getInstance("openssl.TLS");
             } else {
-                sslContext = SSLContext.getInstance("TLSv1.2");
+                sslContext = SSLContext.getInstance(protocol);
             }
             sslContext.init(keyManagers, trustManagers, null);
         } catch (NoSuchAlgorithmException | KeyManagementException e) {
@@ -245,6 +251,15 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     public static ByteBufferPool getBufferPool() {
         return pool;
+    }
+
+    public static Supplier<XnioWorker> getWorkerSupplier() {
+        return new Supplier<XnioWorker>() {
+            @Override
+            public XnioWorker get() {
+                return getWorker();
+            }
+        };
     }
 
     @Override
@@ -416,7 +431,10 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
                 public void testRunFinished(final Result result) throws Exception {
                     server.close();
                     stopSSLServer();
-                    worker.shutdown();
+                    worker.shutdownNow();
+                    if (!worker.awaitTermination(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Worker failed to shutdown within ten seconds");
+                    }
                 }
             });
         }
@@ -555,7 +573,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
     public static void setRootHandler(HttpHandler handler) {
         if ((isProxy()) && !ajp) {
             //if we are testing HTTP proxy we always add the SSLHeaderHandler
-            //this allows the SSL information to be propagated to be backend
+            //this allows the SSL information to be propagated to the backend
             handler = new SSLHeaderHandler(new ProxyPeerAddressHandler(handler));
         }
         if (dump) {
@@ -567,7 +585,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     /**
      * When using the default SSL settings returns the corresponding client context.
-     * <p/>
+     * <p>
      * If a test case is initialising a custom server side SSLContext then the test case will be responsible for creating it's
      * own client side.
      *
@@ -582,7 +600,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     /**
      * Start the SSL server using the default settings.
-     * <p/>
+     * <p>
      * The default settings initialise a server with a key for 'localhost' and a trust store containing the certificate of a
      * single client, the client authentication mode is set to 'REQUESTED' to optionally allow progression to CLIENT-CERT
      * authentication.
@@ -595,8 +613,12 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
     }
 
     public static SSLContext createClientSslContext() {
+        return createClientSslContext("TLSv1.2");
+    }
+
+    public static SSLContext createClientSslContext(String protocol) {
         try {
-            return createSSLContext(loadKeyStore(CLIENT_KEY_STORE), loadKeyStore(CLIENT_TRUST_STORE), true);
+            return createSSLContext(loadKeyStore(CLIENT_KEY_STORE), loadKeyStore(CLIENT_TRUST_STORE), protocol, true);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -612,7 +634,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     /**
      * Start the SSL server using the default ssl context and the provided option map
-     * <p/>
+     * <p>
      * The default settings initialise a server with a key for 'localhost' and a trust store containing the certificate of a
      * single client. Client cert mode is not set by default
      */
@@ -623,7 +645,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
 
     /**
      * Start the SSL server using the default ssl context and the provided option map
-     * <p/>
+     * <p>
      * The default settings initialise a server with a key for 'localhost' and a trust store containing the certificate of a
      * single client. Client cert mode is not set by default
      */
@@ -695,6 +717,12 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
             proxyOpenListener.closeConnections();
         } else {
             openListener.closeConnections();
+        }
+        //some environments seem to need a small delay to re-bind the socket
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            //ignore
         }
     }
 
@@ -783,7 +811,7 @@ public class DefaultServer extends BlockJUnit4ClassRunner {
     /**
      * The root handler is tied to the connection, and AJP can re-use connections for different tests, so we
      * use a delegating handler to chance the next handler after the root.
-     * <p/>
+     * <p>
      * TODO: should we re-read the root handler for every request?
      */
     private static final class DelegatingHandler implements HttpHandler {

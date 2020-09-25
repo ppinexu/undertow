@@ -190,10 +190,10 @@ public class ServletPathMatches {
     /**
      * Sets up the handlers in the servlet chain. We setup a chain for every path + extension match possibility.
      * (i.e. if there a m path mappings and n extension mappings we have n*m chains).
-     * <p/>
+     * <p>
      * If a chain consists of only the default servlet then we add it as an async handler, so that resources can be
      * served up directly without using blocking operations.
-     * <p/>
+     * <p>
      * TODO: this logic is a bit convoluted at the moment, we should look at simplifying it
      */
     private ServletPathMatchesData setupServletChains() {
@@ -457,7 +457,8 @@ public class ServletPathMatches {
         }
         if (modifiedPath.endsWith("/*")) {
             String baseFilterPath = modifiedPath.substring(0, modifiedPath.length() - 1);
-            return path.startsWith(baseFilterPath);
+            String exactFilterPath = modifiedPath.substring(0, modifiedPath.length() - 2);
+            return path.startsWith(baseFilterPath) || path.equals(exactFilterPath);
         } else {
             return modifiedPath.equals(path);
         }

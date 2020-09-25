@@ -56,7 +56,8 @@ public class BlockingWriterSenderImpl implements Sender {
     private final PrintWriter writer;
 
     private FileChannel pendingFile;
-    private boolean inCall;
+    private volatile Thread inCall;
+    private volatile Thread sendThread;
     private String next;
     private IoCallback queuedCallback;
 
@@ -68,7 +69,8 @@ public class BlockingWriterSenderImpl implements Sender {
 
     @Override
     public void send(final ByteBuffer buffer, final IoCallback callback) {
-        if (inCall) {
+        sendThread = Thread.currentThread();
+        if (inCall == Thread.currentThread()) {
             queue(new ByteBuffer[]{buffer}, callback);
             return;
         }
@@ -80,7 +82,8 @@ public class BlockingWriterSenderImpl implements Sender {
 
     @Override
     public void send(final ByteBuffer[] buffer, final IoCallback callback) {
-        if (inCall) {
+        sendThread = Thread.currentThread();
+        if (inCall == Thread.currentThread()) {
             queue(buffer, callback);
             return;
         }
@@ -94,17 +97,14 @@ public class BlockingWriterSenderImpl implements Sender {
 
     @Override
     public void send(final String data, final IoCallback callback) {
-        if (inCall) {
+        sendThread = Thread.currentThread();
+        if (inCall == Thread.currentThread()) {
             queue(data, callback);
             return;
         }
         writer.write(data);
 
-        if (writer.checkError()) {
-            callback.onException(exchange, this, new IOException());
-        } else {
-            invokeOnComplete(callback);
-        }
+        invokeOnComplete(callback);
     }
 
     @Override
@@ -119,16 +119,13 @@ public class BlockingWriterSenderImpl implements Sender {
 
     @Override
     public void send(final String data, final Charset charset, final IoCallback callback) {
-        if (inCall) {
+        sendThread = Thread.currentThread();
+        if (inCall == Thread.currentThread()) {
             queue(new ByteBuffer[]{ByteBuffer.wrap(data.getBytes(charset))}, callback);
             return;
         }
         writer.write(data);
-        if (writer.checkError()) {
-            callback.onException(exchange, this, new IOException());
-        } else {
-            invokeOnComplete(callback);
-        }
+        invokeOnComplete(callback);
     }
 
     @Override
@@ -143,7 +140,8 @@ public class BlockingWriterSenderImpl implements Sender {
 
     @Override
     public void transferFrom(FileChannel source, IoCallback callback) {
-        if (inCall) {
+        sendThread = Thread.currentThread();
+        if (inCall == Thread.currentThread()) {
             queue(source, callback);
             return;
         }
@@ -183,7 +181,11 @@ public class BlockingWriterSenderImpl implements Sender {
     @Override
     public void close(final IoCallback callback) {
         writer.close();
-        invokeOnComplete(callback);
+        if (writer.checkError()) {
+            callback.onException(exchange, this, new IOException());
+        } else {
+            invokeOnComplete(callback);
+        }
     }
 
     @Override
@@ -191,6 +193,7 @@ public class BlockingWriterSenderImpl implements Sender {
         if(exchange.getAttachment(ServletRequestContext.ATTACHMENT_KEY).getDispatcherType() != DispatcherType.INCLUDE) {
             IoUtils.safeClose(writer);
         }
+        writer.checkError();
     }
 
 
@@ -204,20 +207,20 @@ public class BlockingWriterSenderImpl implements Sender {
         }
         String data = builder.toString();
         writer.write(data);
-        if (writer.checkError()) {
-            callback.onException(exchange, this, new IOException());
-            return false;
-        }
         return true;
     }
 
 
     private void invokeOnComplete(final IoCallback callback) {
-        inCall = true;
+        sendThread = null;
+        inCall = Thread.currentThread();
         try {
             callback.onComplete(exchange, this);
         } finally {
-            inCall = false;
+            inCall = null;
+        }
+        if (Thread.currentThread() != sendThread) {
+            return;
         }
         while (next != null) {
             String next = this.next;
@@ -228,11 +231,15 @@ public class BlockingWriterSenderImpl implements Sender {
             if (writer.checkError()) {
                 queuedCallback.onException(exchange, this, new IOException());
             } else {
-                inCall = true;
+                sendThread = null;
+                inCall = Thread.currentThread();
                 try {
                     queuedCallback.onComplete(exchange, this);
                 } finally {
-                    inCall = false;
+                    inCall = null;
+                }
+                if (Thread.currentThread() != sendThread) {
+                    return;
                 }
             }
         }

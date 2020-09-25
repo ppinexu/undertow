@@ -24,8 +24,10 @@ import io.undertow.server.handlers.Cookie;
 import io.undertow.server.handlers.CookieImpl;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -33,13 +35,13 @@ import java.util.TreeMap;
  *
  * @author Stuart Douglas
  * @author Andre Dietisheim
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 public class Cookies {
 
     public static final String DOMAIN = "$Domain";
     public static final String VERSION = "$Version";
     public static final String PATH = "$Path";
-
 
 
     /**
@@ -197,27 +199,55 @@ public class Cookies {
      *
      * @see Cookie
      * @see <a href="http://tools.ietf.org/search/rfc2109">rfc2109</a>
+     * @deprecated use {@link #parseRequestCookies(int, boolean, List, Set)} instead
      */
+    @Deprecated
     public static Map<String, Cookie> parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies) {
         return parseRequestCookies(maxCookies, allowEqualInValue, cookies, LegacyCookieSupport.COMMA_IS_SEPARATOR);
     }
 
+    public static void parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies, Set<Cookie> parsedCookies) {
+        parseRequestCookies(maxCookies, allowEqualInValue, cookies, parsedCookies, LegacyCookieSupport.COMMA_IS_SEPARATOR);
+    }
+
+    @Deprecated
     static Map<String, Cookie> parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies, boolean commaIsSeperator) {
+        return parseRequestCookies(maxCookies, allowEqualInValue, cookies, commaIsSeperator, LegacyCookieSupport.ALLOW_HTTP_SEPARATORS_IN_V0);
+    }
+
+    static void parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies, Set<Cookie> parsedCookies, boolean commaIsSeperator) {
+        parseRequestCookies(maxCookies, allowEqualInValue, cookies, parsedCookies, commaIsSeperator, LegacyCookieSupport.ALLOW_HTTP_SEPARATORS_IN_V0);
+    }
+
+    static Map<String, Cookie> parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies, boolean commaIsSeperator, boolean allowHttpSepartorsV0) {
         if (cookies == null) {
             return new TreeMap<>();
         }
-        final Map<String, Cookie> parsedCookies = new TreeMap<>();
-
+        final Set<Cookie> parsedCookies = new HashSet<>();
         for (String cookie : cookies) {
-            parseCookie(cookie, parsedCookies, maxCookies, allowEqualInValue, commaIsSeperator);
+            parseCookie(cookie, parsedCookies, maxCookies, allowEqualInValue, commaIsSeperator, allowHttpSepartorsV0);
         }
-        return parsedCookies;
+
+        final Map<String, Cookie> retVal = new TreeMap<>();
+        for (Cookie cookie : parsedCookies) {
+            retVal.put(cookie.getName(), cookie);
+        }
+        return retVal;
     }
 
-    private static void parseCookie(final String cookie, final Map<String, Cookie> parsedCookies, int maxCookies, boolean allowEqualInValue, boolean commaIsSeperator) {
+    static void parseRequestCookies(int maxCookies, boolean allowEqualInValue, List<String> cookies, Set<Cookie> parsedCookies, boolean commaIsSeperator, boolean allowHttpSepartorsV0) {
+        if (cookies != null) {
+            for (String cookie : cookies) {
+                parseCookie(cookie, parsedCookies, maxCookies, allowEqualInValue, commaIsSeperator, allowHttpSepartorsV0);
+            }
+        }
+    }
+
+    private static void parseCookie(final String cookie, final Set<Cookie> parsedCookies, int maxCookies, boolean allowEqualInValue, boolean commaIsSeperator, boolean allowHttpSepartorsV0) {
         int state = 0;
         String name = null;
         int start = 0;
+        boolean containsEscapedQuotes = false;
         int cookieCount = parsedCookies.size();
         final Map<String, String> cookies = new HashMap<>();
         final Map<String, String> additional = new HashMap<>();
@@ -257,9 +287,20 @@ public class Cookies {
                         state = 0;
                         start = i + 1;
                     } else if (c == '"' && start == i) { //only process the " if it is the first character
+                        containsEscapedQuotes = false;
                         state = 3;
                         start = i + 1;
-                    } else if (!allowEqualInValue && c == '=') {
+                    } else if (c == '=') {
+                        if (!allowEqualInValue && !allowHttpSepartorsV0) {
+                            cookieCount = createCookie(name, cookie.substring(start, i), maxCookies, cookieCount, cookies, additional);
+                            state = 4;
+                            start = i + 1;
+                        }
+                    } else if (c != ':' && !allowHttpSepartorsV0 && LegacyCookieSupport.isHttpSeparator(c)) {
+                        // http separators are not allowed in V0 cookie value unless io.undertow.legacy.cookie.ALLOW_HTTP_SEPARATORS_IN_V0 is set to true.
+                        // However, "<hostcontroller-name>:<server-name>" (e.g. master:node1) is added as jvmRoute (instance-id) by default in WildFly domain mode.
+                        // Though ":" is http separator, we allow it by default. Because, when Undertow runs as a proxy server (mod_cluster),
+                        // we need to handle jvmRoute containing ":" in the request cookie value correctly to maintain the sticky session.
                         cookieCount = createCookie(name, cookie.substring(start, i), maxCookies, cookieCount, cookies, additional);
                         state = 4;
                         start = i + 1;
@@ -269,9 +310,23 @@ public class Cookies {
                 case 3: {
                     //extract quoted value
                     if (c == '"') {
-                        cookieCount = createCookie(name, cookie.substring(start, i), maxCookies, cookieCount, cookies, additional);
+                        cookieCount = createCookie(name, containsEscapedQuotes ? unescapeDoubleQuotes(cookie.substring(start, i)) : cookie.substring(start, i), maxCookies, cookieCount, cookies, additional);
                         state = 0;
                         start = i + 1;
+                    }
+                    // Skip the next double quote char '"' when it is escaped by backslash '\' (i.e. \") inside the quoted value
+                    if (c == '\\' && (i + 1 < cookie.length()) && cookie.charAt(i + 1) == '"') {
+                        // But..., do not skip at the following conditions
+                        if (i + 2 == cookie.length()) { // Cookie: key="\" or Cookie: key="...\"
+                            break;
+                        }
+                        if (i + 2 < cookie.length() && (cookie.charAt(i + 2) == ';'      // Cookie: key="\"; key2=...
+                                || (commaIsSeperator && cookie.charAt(i + 2) == ','))) { // Cookie: key="\", key2=...
+                            break;
+                        }
+                        // Skip the next double quote char ('"' behind '\') in the cookie value
+                        i++;
+                        containsEscapedQuotes = true;
                     }
                     break;
                 }
@@ -303,7 +358,7 @@ public class Cookies {
             if (path != null) {
                 c.setPath(path);
             }
-            parsedCookies.put(c.getName(), c);
+            parsedCookies.add(c);
         }
     }
 
@@ -325,6 +380,24 @@ public class Cookies {
             cookies.put(name, value);
             return ++cookieCount;
         }
+    }
+
+    private static String unescapeDoubleQuotes(final String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+
+        // Replace all escaped double quote (\") to double quote (")
+        char[] tmp = new char[value.length()];
+        int dest = 0;
+        for(int i = 0; i < value.length(); i++) {
+            if (value.charAt(i) == '\\' && (i + 1 < value.length()) && value.charAt(i + 1) == '"') {
+                i++;
+            }
+            tmp[dest] = value.charAt(i);
+            dest++;
+        }
+        return new String(tmp, 0, dest);
     }
 
     private Cookies() {

@@ -77,6 +77,8 @@ import io.undertow.util.SameThreadExecutor;
 import io.undertow.util.StatusCodes;
 import io.undertow.util.Transfer;
 import io.undertow.util.WorkerUtils;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * An HTTP handler which proxies content to a remote server.
@@ -133,11 +135,11 @@ public final class ProxyHandler implements HttpHandler {
      */
     @Deprecated
     public ProxyHandler(ProxyClient proxyClient, int maxRequestTime, HttpHandler next, boolean rewriteHostHeader, boolean reuseXForwarded) {
-          this(proxyClient, maxRequestTime, next, rewriteHostHeader, reuseXForwarded, DEFAULT_MAX_RETRY_ATTEMPTS);
-      }
+        this(proxyClient, maxRequestTime, next, rewriteHostHeader, reuseXForwarded, DEFAULT_MAX_RETRY_ATTEMPTS);
+    }
 
     /**
-     *  @param proxyClient the client to use to make the proxy call
+     * @param proxyClient the client to use to make the proxy call
      * @param maxRequestTime the maximum amount of time to allow the request to be processed
      * @param next the next handler in line
      * @param rewriteHostHeader should the HOST header be rewritten to use the target host of the call.
@@ -287,6 +289,23 @@ public final class ProxyHandler implements HttpHandler {
         return proxyClient;
     }
 
+    @Override
+    public String toString() {
+        List<ProxyClient.ProxyTarget> proxyTargets = proxyClient.getAllTargets();
+        if (proxyTargets.isEmpty()){
+            return "ProxyHandler - "+proxyClient.getClass().getSimpleName();
+        }
+        if(proxyTargets.size()==1 && !rewriteHostHeader){
+            return "reverse-proxy( '" + proxyTargets.get(0).toString() + "' )";
+        } else {
+            String outputResult = "reverse-proxy( { '" + proxyTargets.stream().map(s -> s.toString()).collect(Collectors.joining("', '")) + "' }";
+            if(rewriteHostHeader){
+                outputResult += ", rewrite-host-header=true";
+            }
+            return outputResult+" )";
+        }
+    }
+
     private final class ProxyClientHandler implements ProxyCallback<ProxyConnection>, Runnable {
 
         private int tries;
@@ -380,7 +399,7 @@ public final class ProxyHandler implements HttpHandler {
         private final Predicate idempotentPredicate;
 
         ProxyAction(final ProxyConnection clientConnection, final HttpServerExchange exchange, Map<HttpString, ExchangeAttribute> requestHeaders,
-                    boolean rewriteHostHeader, boolean reuseXForwarded, ProxyClientHandler proxyClientHandler, Predicate idempotentPredicate) {
+                boolean rewriteHostHeader, boolean reuseXForwarded, ProxyClientHandler proxyClientHandler, Predicate idempotentPredicate) {
             this.clientConnection = clientConnection;
             this.exchange = exchange;
             this.requestHeaders = requestHeaders;

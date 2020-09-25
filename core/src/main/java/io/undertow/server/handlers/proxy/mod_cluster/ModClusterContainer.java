@@ -23,6 +23,7 @@ import io.undertow.client.UndertowClient;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.server.handlers.Cookie;
 import io.undertow.server.handlers.cache.LRUCache;
+import io.undertow.server.handlers.proxy.RouteIteratorFactory;
 import io.undertow.server.handlers.proxy.ProxyClient;
 import io.undertow.util.CopyOnWriteMap;
 import io.undertow.util.Headers;
@@ -37,6 +38,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
@@ -45,6 +47,8 @@ import java.util.concurrent.TimeUnit;
 /**
  * @author Stuart Douglas
  * @author Emanuel Muckenhuber
+ * @author Radoslav Husar
+ * @author <a href="mailto:ropalka@redhat.com">Richard Opalka</a>
  */
 class ModClusterContainer implements ModClusterController {
 
@@ -70,6 +74,7 @@ class ModClusterContainer implements ModClusterController {
     private final ModCluster modCluster;
     private final NodeHealthChecker healthChecker;
     private final long removeBrokenNodesThreshold;
+    private RouteIteratorFactory routeIteratorFactory;
 
     private final OptionMap clientOptions;
 
@@ -81,6 +86,7 @@ class ModClusterContainer implements ModClusterController {
         this.healthChecker = modCluster.getHealthChecker();
         this.proxyClient = new ModClusterProxyClient(null, this);
         this.removeBrokenNodesThreshold = removeThreshold(modCluster.getHealthCheckInterval(), modCluster.getRemoveBrokenNodes());
+        this.routeIteratorFactory = new RouteIteratorFactory(modCluster.routeParsingStrategy(), RouteIteratorFactory.ParsingCompatibility.MOD_CLUSTER, modCluster.rankedAffinityDelimiter());
     }
 
     String getServerID() {
@@ -117,10 +123,10 @@ class ModClusterContainer implements ModClusterController {
     }
 
     /**
-     * Get the mod cluster proxy target.
+     * Get the mod_cluster proxy target.
      *
      * @param exchange the http exchange
-     * @return
+     * @return proxy target
      */
     public ModClusterProxyTarget findTarget(final HttpServerExchange exchange) {
         // There is an option to disable the virtual host check, probably a default virtual host
@@ -129,20 +135,21 @@ class ModClusterContainer implements ModClusterController {
             return null;
         }
         for (final Balancer balancer : balancers.values()) {
-            final Map<String, Cookie> cookies = exchange.getRequestCookies();
             if (balancer.isStickySession()) {
-                if (cookies.containsKey(balancer.getStickySessionCookie())) {
-                    final String session = cookies.get(balancer.getStickySessionCookie()).getValue();
-                    final String jvmRoute = getJVMRoute(session);
-                    if (jvmRoute != null) {
-                        return new ModClusterProxyTarget.ExistingSessionTarget(session, jvmRoute, entry.getValue(), this, balancer.isStickySessionForce());
+                for (Cookie cookie : exchange.requestCookies()) {
+                    if (balancer.getStickySessionCookie().equals(cookie.getName())) {
+                        String sessionId = cookie.getValue();
+                        Iterator<CharSequence> routes = parseRoutes(sessionId);
+                        if (routes.hasNext()) {
+                            return new ModClusterProxyTarget.ExistingSessionTarget(sessionId, routes, entry.getValue(), this, balancer.isStickySessionForce());
+                        }
                     }
                 }
                 if (exchange.getPathParameters().containsKey(balancer.getStickySessionPath())) {
-                    final String session = exchange.getPathParameters().get(balancer.getStickySessionPath()).getFirst();
-                    final String jvmRoute = getJVMRoute(session);
-                    if (jvmRoute != null) {
-                        return new ModClusterProxyTarget.ExistingSessionTarget(session, jvmRoute, entry.getValue(), this, balancer.isStickySessionForce());
+                    String sessionId = exchange.getPathParameters().get(balancer.getStickySessionPath()).getFirst();
+                    Iterator<CharSequence> jvmRoute = parseRoutes(sessionId);
+                    if (jvmRoute.hasNext()) {
+                        return new ModClusterProxyTarget.ExistingSessionTarget(sessionId, jvmRoute, entry.getValue(), this, balancer.isStickySessionForce());
                     }
                 }
             }
@@ -203,7 +210,7 @@ class ModClusterContainer implements ModClusterController {
      * Management command enabling all contexts on the given node.
      *
      * @param jvmRoute the jvmRoute
-     * @return
+     * @return whether the given node was enabled
      */
     public synchronized boolean enableNode(final String jvmRoute) {
         final Node node = nodes.get(jvmRoute);
@@ -220,7 +227,7 @@ class ModClusterContainer implements ModClusterController {
      * Management command disabling all contexts on the given node.
      *
      * @param jvmRoute the jvmRoute
-     * @return
+     * @return whether the given node was disabled
      */
     public synchronized boolean disableNode(final String jvmRoute) {
         final Node node = nodes.get(jvmRoute);
@@ -237,7 +244,7 @@ class ModClusterContainer implements ModClusterController {
      * Management command stopping all contexts on the given node.
      *
      * @param jvmRoute the jvmRoute
-     * @return
+     * @return whether the given node was stopped
      */
     public synchronized boolean stopNode(final String jvmRoute) {
         final Node node = nodes.get(jvmRoute);
@@ -396,7 +403,7 @@ class ModClusterContainer implements ModClusterController {
      * @param entry              the resolved virtual host entry
      * @param domain             the load balancing domain, if known
      * @param session            the actual value of JSESSIONID/jsessionid cookie/parameter
-     * @param jvmRoute           the original jvmRoute
+     * @param jvmRoute           the original jvmRoute; in case of multiple routes, the first one
      * @param forceStickySession whether sticky sessions are forced
      * @return the context, {@code null} if not found
      */
@@ -505,12 +512,8 @@ class ModClusterContainer implements ModClusterController {
         return clientOptions;
     }
 
-    static String getJVMRoute(final String sessionId) {
-        int index = sessionId.indexOf('.');
-        if (index == -1) {
-            return null;
-        }
-        return sessionId.substring(index + 1);
+    private Iterator<CharSequence> parseRoutes(String sessionId) {
+        return routeIteratorFactory.iterator(sessionId);
     }
 
     static Context electNode(final Iterable<Context> contexts, final boolean existingSession, final String domain) {

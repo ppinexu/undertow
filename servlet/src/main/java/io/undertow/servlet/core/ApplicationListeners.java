@@ -212,7 +212,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletContextAttributeEvent sre = new ServletContextAttributeEvent(servletContext, name, value);
         for (int i = 0; i < servletContextAttributeListeners.length; ++i) {
-            this.<ServletContextAttributeListener>get(servletContextAttributeListeners[i]).attributeAdded(sre);
+            ManagedListener listener = servletContextAttributeListeners[i];
+            try {
+                this.<ServletContextAttributeListener> get(listener).attributeAdded(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeAdded", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -222,7 +227,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletContextAttributeEvent sre = new ServletContextAttributeEvent(servletContext, name, value);
         for (int i = 0; i < servletContextAttributeListeners.length; ++i) {
-            this.<ServletContextAttributeListener>get(servletContextAttributeListeners[i]).attributeRemoved(sre);
+            ManagedListener listener = servletContextAttributeListeners[i];
+            try {
+                this.<ServletContextAttributeListener> get(listener).attributeRemoved(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeRemoved", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -232,7 +242,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletContextAttributeEvent sre = new ServletContextAttributeEvent(servletContext, name, value);
         for (int i = 0; i < servletContextAttributeListeners.length; ++i) {
-            this.<ServletContextAttributeListener>get(servletContextAttributeListeners[i]).attributeReplaced(sre);
+            ManagedListener listener = servletContextAttributeListeners[i];
+            try {
+                this.<ServletContextAttributeListener> get(listener).attributeReplaced(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeReplaced", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -241,9 +256,23 @@ public class ApplicationListeners implements Lifecycle {
             return;
         }
         if(servletRequestListeners.length > 0) {
+            int i = 0;
             final ServletRequestEvent sre = new ServletRequestEvent(servletContext, request);
-            for (int i = 0; i < servletRequestListeners.length; ++i) {
-                this.<ServletRequestListener>get(servletRequestListeners[i]).requestInitialized(sre);
+            try {
+                for (; i < servletRequestListeners.length; ++i) {
+                    this.<ServletRequestListener>get(servletRequestListeners[i]).requestInitialized(sre);
+                }
+            } catch (RuntimeException e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("requestInitialized", servletRequestListeners[i].getListenerInfo().getListenerClass(), e);
+                for (; i >= 0; i--) {
+                    ManagedListener listener = servletRequestListeners[i];
+                    try {
+                        this.<ServletRequestListener> get(listener).requestDestroyed(sre);
+                    } catch (Throwable t) {
+                        UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("requestDestroyed", listener.getListenerInfo().getListenerClass(), e);
+                    }
+                }
+                throw e;
             }
         }
     }
@@ -271,7 +300,13 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletRequestAttributeEvent sre = new ServletRequestAttributeEvent(servletContext, request, name, value);
         for (int i = 0; i < servletRequestAttributeListeners.length; ++i) {
-            this.<ServletRequestAttributeListener>get(servletRequestAttributeListeners[i]).attributeAdded(sre);
+            ManagedListener listener = servletRequestAttributeListeners[i];
+            try {
+                this.<ServletRequestAttributeListener> get(listener).attributeAdded(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeAdded", listener.getListenerInfo().getListenerClass(), e);
+            }
+
         }
     }
 
@@ -281,7 +316,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletRequestAttributeEvent sre = new ServletRequestAttributeEvent(servletContext, request, name, value);
         for (int i = 0; i < servletRequestAttributeListeners.length; ++i) {
-            this.<ServletRequestAttributeListener>get(servletRequestAttributeListeners[i]).attributeRemoved(sre);
+            ManagedListener listener = servletRequestAttributeListeners[i];
+            try {
+                this.<ServletRequestAttributeListener> get(listener).attributeRemoved(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeRemoved", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -291,7 +331,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final ServletRequestAttributeEvent sre = new ServletRequestAttributeEvent(servletContext, request, name, value);
         for (int i = 0; i < servletRequestAttributeListeners.length; ++i) {
-            this.<ServletRequestAttributeListener>get(servletRequestAttributeListeners[i]).attributeReplaced(sre);
+            ManagedListener listener = servletRequestAttributeListeners[i];
+            try {
+                this.<ServletRequestAttributeListener> get(listener).attributeReplaced(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeReplaced", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -301,7 +346,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final HttpSessionEvent sre = new HttpSessionEvent(session);
         for (int i = 0; i < httpSessionListeners.length; ++i) {
-            this.<HttpSessionListener>get(httpSessionListeners[i]).sessionCreated(sre);
+            ManagedListener listener = httpSessionListeners[i];
+            try {
+                this.<HttpSessionListener> get(listener).sessionCreated(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("sessionCreated", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -312,7 +362,11 @@ public class ApplicationListeners implements Lifecycle {
         final HttpSessionEvent sre = new HttpSessionEvent(session);
         for (int i = httpSessionListeners.length - 1; i >= 0; --i) {
             ManagedListener listener = httpSessionListeners[i];
-            this.<HttpSessionListener>get(listener).sessionDestroyed(sre);
+            try {
+                this.<HttpSessionListener> get(listener).sessionDestroyed(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("sessionDestroyed", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -322,7 +376,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final HttpSessionBindingEvent sre = new HttpSessionBindingEvent(session, name, value);
         for (int i = 0; i < httpSessionAttributeListeners.length; ++i) {
-            this.<HttpSessionAttributeListener>get(httpSessionAttributeListeners[i]).attributeAdded(sre);
+            ManagedListener listener = httpSessionAttributeListeners[i];
+            try {
+                this.<HttpSessionAttributeListener> get(listener).attributeAdded(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeAdded", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -332,7 +391,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final HttpSessionBindingEvent sre = new HttpSessionBindingEvent(session, name, value);
         for (int i = 0; i < httpSessionAttributeListeners.length; ++i) {
-            this.<HttpSessionAttributeListener>get(httpSessionAttributeListeners[i]).attributeRemoved(sre);
+            ManagedListener listener = httpSessionAttributeListeners[i];
+            try {
+                this.<HttpSessionAttributeListener> get(httpSessionAttributeListeners[i]).attributeRemoved(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeRemoved", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -342,7 +406,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final HttpSessionBindingEvent sre = new HttpSessionBindingEvent(session, name, value);
         for (int i = 0; i < httpSessionAttributeListeners.length; ++i) {
-            this.<HttpSessionAttributeListener>get(httpSessionAttributeListeners[i]).attributeReplaced(sre);
+            ManagedListener listener = httpSessionAttributeListeners[i];
+            try {
+                this.<HttpSessionAttributeListener> get(listener).attributeReplaced(sre);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("attributeReplaced", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 
@@ -352,7 +421,12 @@ public class ApplicationListeners implements Lifecycle {
         }
         final HttpSessionEvent sre = new HttpSessionEvent(session);
         for (int i = 0; i < httpSessionIdListeners.length; ++i) {
-            this.<HttpSessionIdListener>get(httpSessionIdListeners[i]).sessionIdChanged(sre, oldSessionId);
+            ManagedListener listener = httpSessionIdListeners[i];
+            try {
+                this.<HttpSessionIdListener> get(listener).sessionIdChanged(sre, oldSessionId);
+            } catch (Exception e) {
+                UndertowServletLogger.REQUEST_LOGGER.errorInvokingListener("sessionIdChanged", listener.getListenerInfo().getListenerClass(), e);
+            }
         }
     }
 

@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.xnio.conduits.StreamSourceConduit;
+import io.undertow.conduits.GzipStreamSourceConduit;
 import io.undertow.conduits.InflatingStreamSourceConduit;
 import io.undertow.server.ConduitWrapper;
 import io.undertow.server.HandlerWrapper;
@@ -79,6 +80,11 @@ public class RequestEncodingHandler implements HttpHandler {
         return next;
     }
 
+    @Override
+    public String toString() {
+        return "uncompress()";
+    }
+
 
     public static class Builder implements HandlerBuilder {
 
@@ -108,6 +114,7 @@ public class RequestEncodingHandler implements HttpHandler {
                 @Override
                 public HttpHandler wrap(HttpHandler handler) {
                     return new RequestEncodingHandler(handler)
+                            .addEncoding("gzip", GzipStreamSourceConduit.WRAPPER)
                             .addEncoding("deflate", InflatingStreamSourceConduit.WRAPPER);
                 }
             };
